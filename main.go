@@ -40,7 +40,7 @@ The commands are:
 	version             Print the current version
 	wait                Wait for workflow runs to finish on a branch.
 
-Use "github-actions help [command]" for more information about a command.
+Use "github-actions [command] --help" for more information about a command.
 `
 
 func usage() {
