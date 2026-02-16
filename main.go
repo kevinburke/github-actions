@@ -356,6 +356,12 @@ func doWait(ctx context.Context, client *ghactions.Client, remote *git.RemoteURL
 
 			if len(runs) > 0 {
 				fmt.Printf("%s\n", runs[0].HTMLURL)
+				if len(runs[0].PullRequests) > 0 {
+					pr := runs[0].PullRequests[0]
+					fmt.Printf("https://%s/%s/%s/pull/%d\n", remote.Host, owner, repo, pr.Number)
+				} else {
+					fmt.Printf("https://%s/%s/%s/tree/%s\n", remote.Host, owner, repo, branch)
+				}
 			}
 
 			c.Display(branch + " build complete!")

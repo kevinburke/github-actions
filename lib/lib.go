@@ -21,6 +21,12 @@ type WorkflowRunsResponse struct {
 	WorkflowRuns []WorkflowRun `json:"workflow_runs"`
 }
 
+// PullRequestRef represents a pull request reference in a workflow run.
+type PullRequestRef struct {
+	Number int    `json:"number"`
+	URL    string `json:"url"`
+}
+
 // WorkflowRun represents a GitHub Actions workflow run.
 type WorkflowRun struct {
 	ID           int64      `json:"id"`
@@ -41,6 +47,8 @@ type WorkflowRun struct {
 	UpdatedAt    time.Time  `json:"updated_at"`
 	RunStartedAt *time.Time `json:"run_started_at"`
 	JobsURL      string     `json:"jobs_url"`
+
+	PullRequests []PullRequestRef `json:"pull_requests"`
 }
 
 // JobsResponse represents the response from listing jobs for a workflow run.
