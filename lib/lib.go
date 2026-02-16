@@ -1,3 +1,4 @@
+// Package lib implements core functionality for the github-actions CLI tool.
 package lib
 
 import (
@@ -13,7 +14,7 @@ import (
 )
 
 // Version is the github-actions version. Run "make release" to bump this number.
-const Version = "0.2"
+const Version = "0.2.0"
 
 // WorkflowRunsResponse represents the response from listing workflow runs.
 type WorkflowRunsResponse struct {
