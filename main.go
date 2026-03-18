@@ -25,7 +25,6 @@ import (
 
 	"github.com/kevinburke/bigtext"
 	ghactions "github.com/kevinburke/github-actions/lib"
-	git "github.com/kevinburke/go-git"
 )
 
 const help = `The github-actions binary interacts with GitHub Actions.
@@ -111,7 +110,7 @@ Open the GitHub Actions workflow run for the current branch in your browser.
 		branch, err := getBranchFromArgs(ctx, args)
 		checkError(err, "getting git branch")
 
-		remote, err := git.GetRemoteURL(*waitRemote)
+		remote, err := getRemoteURL(*waitRemote)
 		checkError(err, "loading git info")
 
 		host := remote.Host
@@ -132,7 +131,7 @@ Open the GitHub Actions workflow run for the current branch in your browser.
 		branch, err := getBranchFromArgs(ctx, args)
 		checkError(err, "getting git branch")
 
-		remote, err := git.GetRemoteURL(*openRemote)
+		remote, err := getRemoteURL(*openRemote)
 		checkError(err, "loading git info")
 
 		host := remote.Host
@@ -170,7 +169,7 @@ func getBranchFromArgs(ctx context.Context, args []string) (string, error) {
 	if len(args) >= 1 {
 		return args[0], nil
 	}
-	return git.CurrentBranch(ctx)
+	return currentBranch(ctx)
 }
 
 // isHttpError checks if the given error is a request timeout or a network
@@ -216,8 +215,8 @@ func shouldPrint(lastPrinted time.Time, duration time.Duration) bool {
 	return lastPrinted.Add(durToUse).Before(now)
 }
 
-func doOpen(ctx context.Context, client *ghactions.Client, remote *git.RemoteURL, branch string) error {
-	tip, err := git.Tip(branch)
+func doOpen(ctx context.Context, client *ghactions.Client, remote *RemoteURL, branch string) error {
+	tip, err := gitTip(branch)
 	if err != nil {
 		return err
 	}
@@ -258,8 +257,8 @@ func doOpen(ctx context.Context, client *ghactions.Client, remote *git.RemoteURL
 	}
 }
 
-func doWait(ctx context.Context, client *ghactions.Client, remote *git.RemoteURL, branch string, numOutputLines int) error {
-	tip, err := git.Tip(branch)
+func doWait(ctx context.Context, client *ghactions.Client, remote *RemoteURL, branch string, numOutputLines int) error {
+	tip, err := gitTip(branch)
 	if err != nil {
 		return err
 	}

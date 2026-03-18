@@ -300,7 +300,7 @@ func findBuildFailure(log []byte, numOutputLines int) []byte {
 
 	// Count newlines from the end
 	newlineIdx := len(log)
-	for count := 0; count < numOutputLines; count++ {
+	for range numOutputLines {
 		prevNewlineIdx := bytes.LastIndexByte(log[:newlineIdx-1], '\n')
 		if prevNewlineIdx == -1 {
 			return log
