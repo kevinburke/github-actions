@@ -6,7 +6,11 @@ import (
 	"net/url"
 	"os/exec"
 	"strings"
+	"time"
 )
+
+// gitTimeout is the maximum time to wait for a local git command to complete.
+const gitTimeout = 10 * time.Second
 
 // RemoteURL holds parsed components of a git remote URL.
 type RemoteURL struct {
@@ -19,8 +23,10 @@ type RemoteURL struct {
 }
 
 // getRemoteURL returns a parsed RemoteURL for the named git remote.
-func getRemoteURL(remoteName string) (*RemoteURL, error) {
-	out, err := exec.Command("git", "config", "--get", fmt.Sprintf("remote.%s.url", remoteName)).Output()
+func getRemoteURL(ctx context.Context, remoteName string) (*RemoteURL, error) {
+	ctx, cancel := context.WithTimeout(ctx, gitTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "git", "config", "--get", fmt.Sprintf("remote.%s.url", remoteName)).Output()
 	if err != nil {
 		return nil, fmt.Errorf("getting remote %q URL: %w", remoteName, err)
 	}
@@ -72,6 +78,8 @@ func splitPathRepo(host, pathRepo, raw string) (*RemoteURL, error) {
 
 // currentBranch returns the name of the current Git branch.
 func currentBranch(ctx context.Context) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, gitTimeout)
+	defer cancel()
 	out, err := exec.CommandContext(ctx, "git", "symbolic-ref", "--short", "HEAD").Output()
 	if err != nil {
 		return "", fmt.Errorf("getting current branch: %w", err)
@@ -81,11 +89,13 @@ func currentBranch(ctx context.Context) (string, error) {
 
 // gitTip returns the full commit SHA for the given branch or ref.
 // If branch is empty, defaults to HEAD.
-func gitTip(branch string) (string, error) {
+func gitTip(ctx context.Context, branch string) (string, error) {
 	if branch == "" {
 		branch = "HEAD"
 	}
-	out, err := exec.Command("git", "rev-parse", branch).CombinedOutput()
+	ctx, cancel := context.WithTimeout(ctx, gitTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "git", "rev-parse", branch).CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("getting tip of %q: %s", branch, strings.TrimSpace(string(out)))
 	}

@@ -110,7 +110,7 @@ Open the GitHub Actions workflow run for the current branch in your browser.
 		branch, err := getBranchFromArgs(ctx, args)
 		checkError(err, "getting git branch")
 
-		remote, err := getRemoteURL(*waitRemote)
+		remote, err := getRemoteURL(ctx, *waitRemote)
 		checkError(err, "loading git info")
 
 		host := remote.Host
@@ -131,7 +131,7 @@ Open the GitHub Actions workflow run for the current branch in your browser.
 		branch, err := getBranchFromArgs(ctx, args)
 		checkError(err, "getting git branch")
 
-		remote, err := getRemoteURL(*openRemote)
+		remote, err := getRemoteURL(ctx, *openRemote)
 		checkError(err, "loading git info")
 
 		host := remote.Host
@@ -216,7 +216,7 @@ func shouldPrint(lastPrinted time.Time, duration time.Duration) bool {
 }
 
 func doOpen(ctx context.Context, client *ghactions.Client, remote *RemoteURL, branch string) error {
-	tip, err := gitTip(branch)
+	tip, err := gitTip(ctx, branch)
 	if err != nil {
 		return err
 	}
@@ -258,7 +258,7 @@ func doOpen(ctx context.Context, client *ghactions.Client, remote *RemoteURL, br
 }
 
 func doWait(ctx context.Context, client *ghactions.Client, remote *RemoteURL, branch string, numOutputLines int) error {
-	tip, err := gitTip(branch)
+	tip, err := gitTip(ctx, branch)
 	if err != nil {
 		return err
 	}
