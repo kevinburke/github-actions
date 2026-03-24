@@ -1,5 +1,5 @@
-github.com/BurntSushi/toml v1.5.0 h1:W5quZX/G/csjUnuI8SUYlsHs9M38FC7znL0lIO+DvMg=
-github.com/BurntSushi/toml v1.5.0/go.mod h1:ukJfTF/6rtPPRCnwkur4qwRxa8vTRFBF0uk2lLoLwho=
+github.com/BurntSushi/toml v1.6.0 h1:dRaEfpa2VI55EwlIW72hMRHdWouJeRF7TPYhI+AUQjk=
+github.com/BurntSushi/toml v1.6.0/go.mod h1:ukJfTF/6rtPPRCnwkur4qwRxa8vTRFBF0uk2lLoLwho=
 github.com/andybrewer/mack v0.0.0-20251024001139-afd410b36447 h1:k6+jpIs9ursGz+y7nkcM8wKbcuhHUciAG0K8iJc0Q7U=
 github.com/andybrewer/mack v0.0.0-20251024001139-afd410b36447/go.mod h1:pPGkS23qg1oDBM+DTLoAN8B4k6EH1zYBWwqwvP7nMi0=
 github.com/kevinburke/bigtext v0.0.0-20220519224329-c26d116ded71 h1:3oXjNshpzMGtjE3FIDnbM4noU3FAnLfw9iE6nAci2rA=
