@@ -4,10 +4,7 @@ import (
 	"errors"
 	"io"
 	"net"
-	"net/url"
 	"testing"
-
-	"golang.org/x/sys/unix"
 )
 
 func TestIsRetryableError(t *testing.T) {
@@ -19,24 +16,6 @@ func TestIsRetryableError(t *testing.T) {
 		{"nil", nil, false},
 		{"generic", errors.New("something"), false},
 
-		// Connection reset by peer — the original bug.
-		{"econnreset", unix.ECONNRESET, true},
-		{"econnreset wrapped in OpError", &net.OpError{
-			Op:  "read",
-			Net: "tcp",
-			Err: unix.ECONNRESET,
-		}, true},
-		{"econnreset wrapped in url.Error", &url.Error{
-			Op:  "Get",
-			URL: "https://api.github.com/repos/foo/bar",
-			Err: &net.OpError{
-				Op:  "read",
-				Net: "tcp",
-				Err: unix.ECONNRESET,
-			},
-		}, true},
-
-		{"econnrefused", unix.ECONNREFUSED, true},
 		{"unexpected eof", io.ErrUnexpectedEOF, true},
 		{"eof", io.EOF, true},
 
@@ -48,6 +27,9 @@ func TestIsRetryableError(t *testing.T) {
 		// GitHub API errors should not be retried.
 		{"github api error", &Error{StatusCode: 404, Message: "Not Found"}, false},
 	}
+	// Append platform-specific errno test cases.
+	tests = append(tests, connResetTestCases()...)
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := IsRetryableError(tt.err)

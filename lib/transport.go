@@ -9,8 +9,6 @@ import (
 	"net/url"
 	"strings"
 	"time"
-
-	"golang.org/x/sys/unix"
 )
 
 // IsRetryableError reports whether err is a transient network error that
@@ -28,11 +26,11 @@ func IsRetryableError(err error) bool {
 	}
 
 	// Connection reset by peer.
-	if errors.Is(err, unix.ECONNRESET) {
+	if isConnReset(err) {
 		return true
 	}
 	// Connection refused (server not listening yet, or ephemeral failure).
-	if errors.Is(err, unix.ECONNREFUSED) {
+	if isConnRefused(err) {
 		return true
 	}
 
