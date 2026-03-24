@@ -6,7 +6,7 @@ github.com/kevinburke/bigtext v0.0.0-20220519224329-c26d116ded71 h1:3oXjNshpzMGt
 github.com/kevinburke/bigtext v0.0.0-20220519224329-c26d116ded71/go.mod h1:SSTLTHEc7/Ab2fjt3WUcTB3VKp0U207/840y65prNfE=
 github.com/kevinburke/rest v0.0.0-20250718180114-1a15e4f2364f h1:y+inhBsY0ewgXFXCXlxodNxkXdYeU9YuneCYQEnRkmw=
 github.com/kevinburke/rest v0.0.0-20250718180114-1a15e4f2364f/go.mod h1:3cBF15uOiTj025Ll5QHLw317EB+e06+AEwyt7oHUubI=
-golang.org/x/sys v0.37.0 h1:fdNQudmxPjkdUTPnLn5mdQv7Zwvbvpaxqs831goi9kQ=
-golang.org/x/sys v0.37.0/go.mod h1:OgkHotnGiDImocRcuBABYBEXf8A9a87e/uXjp9XT3ks=
+golang.org/x/sys v0.42.0 h1:omrd2nAlyT5ESRdCLYdm3+fMfNFE/+Rf4bDIQImRJeo=
+golang.org/x/sys v0.42.0/go.mod h1:4GL1E5IUh+htKOUEOaiffhrAeqysfVGipDYzABqnCmw=
 golang.org/x/term v0.36.0 h1:zMPR+aF8gfksFprF/Nc/rd1wRS1EI6nDBGyWAvDzx2Q=
 golang.org/x/term v0.36.0/go.mod h1:Qu394IJq6V6dCBRgwqshf3mPF85AqzYEzofzRdZkWss=

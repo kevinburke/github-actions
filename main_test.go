@@ -49,7 +49,7 @@ func TestIsHttpError(t *testing.T) {
 		{"generic_error", net.UnknownNetworkError("foo"), false},
 		{"dns_error", &net.DNSError{Err: "no such host", Name: "example.com"}, true},
 		{"dial_tcp_error", &net.OpError{Op: "dial", Net: "tcp", Err: &net.DNSError{}}, true},
-		{"read_tcp_error", &net.OpError{Op: "read", Net: "tcp", Err: &net.DNSError{}}, false},
+		{"read_tcp_error", &net.OpError{Op: "read", Net: "tcp", Err: &net.DNSError{}}, true},
 		{"url_error_wrapping_dns", &url.Error{Op: "Get", URL: "https://example.com", Err: &net.DNSError{}}, true},
 		{"url_error_wrapping_generic", &url.Error{Op: "Get", URL: "https://example.com", Err: net.UnknownNetworkError("foo")}, false},
 	}

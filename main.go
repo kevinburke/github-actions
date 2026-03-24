@@ -18,8 +18,6 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
-	"net"
-	"net/url"
 	"os"
 	"time"
 
@@ -175,22 +173,7 @@ func getBranchFromArgs(ctx context.Context, args []string) (string, error) {
 // isHttpError checks if the given error is a request timeout or a network
 // failure - in those cases we want to just retry the request.
 func isHttpError(err error) bool {
-	if err == nil {
-		return false
-	}
-	if uerr, ok := err.(*url.Error); ok {
-		err = uerr.Err
-	}
-	switch err := err.(type) {
-	default:
-		return false
-	case *net.OpError:
-		return err.Op == "dial" && err.Net == "tcp"
-	case *net.DNSError:
-		return true
-	case net.Error:
-		return err.Timeout()
-	}
+	return ghactions.IsRetryableError(err)
 }
 
 var errNoWorkflowRuns = errors.New("github-actions: no workflow runs found")

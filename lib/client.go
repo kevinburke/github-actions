@@ -53,6 +53,10 @@ func NewClient(token string, host string) *Client {
 	}
 
 	rc := restclient.NewBearerClient(token, apiHost)
+	rc.Client.Transport = &retryTransport{
+		base:       rc.Client.Transport,
+		maxRetries: 3,
+	}
 	rc.ErrorParser = func(r *http.Response) error {
 		data, err := io.ReadAll(r.Body)
 		if err != nil {
