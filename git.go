@@ -76,6 +76,25 @@ func splitPathRepo(host, pathRepo, raw string) (*RemoteURL, error) {
 	}, nil
 }
 
+// listRemoteNames returns the names of all configured git remotes.
+func listRemoteNames(ctx context.Context) ([]string, error) {
+	ctx, cancel := context.WithTimeout(ctx, gitTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "git", "remote").Output()
+	if err != nil {
+		return nil, fmt.Errorf("listing git remotes: %w", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	var remotes []string
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			remotes = append(remotes, line)
+		}
+	}
+	return remotes, nil
+}
+
 // currentBranch returns the name of the current Git branch.
 func currentBranch(ctx context.Context) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, gitTimeout)

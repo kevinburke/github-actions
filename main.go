@@ -120,7 +120,7 @@ Open the GitHub Actions workflow run for the current branch in your browser.
 		ctx, cancel := context.WithTimeout(ctx, *waitTimeout)
 		defer cancel()
 
-		err = doWait(ctx, client, remote, branch, *waitOutputLines)
+		err = doWait(ctx, client, remote, *waitRemote, branch, *waitOutputLines)
 		checkError(err, "waiting for workflow runs")
 
 	case "open":
@@ -138,7 +138,7 @@ Open the GitHub Actions workflow run for the current branch in your browser.
 
 		client := ghactions.NewClient(token, host)
 
-		err = doOpen(ctx, client, remote, branch)
+		err = doOpen(ctx, client, remote, *openRemote, branch)
 		checkError(err, "opening workflow run")
 
 	default:
@@ -178,6 +178,75 @@ func isHttpError(err error) bool {
 
 var errNoWorkflowRuns = errors.New("github-actions: no workflow runs found")
 
+// otherRemoteResult holds information about workflow runs found on a
+// non-primary remote.
+type otherRemoteResult struct {
+	RemoteName string
+	Remote     *RemoteURL
+	Runs       []ghactions.WorkflowRun
+}
+
+// checkOtherRemotes queries all git remotes (except currentRemoteName) for
+// workflow runs matching the given commit SHA. It returns results for any
+// remote that has runs. Errors are logged but not fatal — this is best-effort.
+func checkOtherRemotes(ctx context.Context, currentRemoteName, tip string) []otherRemoteResult {
+	remoteNames, err := listRemoteNames(ctx)
+	if err != nil {
+		slog.Debug("could not list git remotes", "error", err)
+		return nil
+	}
+	var results []otherRemoteResult
+	for _, name := range remoteNames {
+		if name == currentRemoteName {
+			continue
+		}
+		remote, err := getRemoteURL(ctx, name)
+		if err != nil {
+			slog.Debug("could not get remote URL", "remote", name, "error", err)
+			continue
+		}
+		token, err := ghactions.GetToken(ctx, remote.Host)
+		if err != nil {
+			slog.Debug("could not get token for remote", "remote", name, "host", remote.Host, "error", err)
+			continue
+		}
+		client := ghactions.NewClient(token, remote.Host)
+		runs, err := client.Repo(remote.Path, remote.RepoName).FindWorkflowRunsForCommit(ctx, tip)
+		if err != nil {
+			slog.Debug("could not query workflow runs on remote", "remote", name, "error", err)
+			continue
+		}
+		if len(runs) > 0 {
+			results = append(results, otherRemoteResult{
+				RemoteName: name,
+				Remote:     remote,
+				Runs:       runs,
+			})
+		}
+	}
+	return results
+}
+
+// printOtherRemoteHints prints suggestions for any workflow runs found on other
+// remotes. Returns true if any results were printed.
+func printOtherRemoteHints(results []otherRemoteResult) bool {
+	if len(results) == 0 {
+		return false
+	}
+	fmt.Println()
+	for _, r := range results {
+		run := r.Runs[0]
+		status := run.Status
+		if run.IsCompleted() && run.Conclusion != nil {
+			status = *run.Conclusion
+		}
+		fmt.Printf("Found workflow runs on remote %q (%s/%s): %s\n", r.RemoteName, r.Remote.Path, r.Remote.RepoName, status)
+		fmt.Printf("  Try: github-actions wait --remote %s\n", r.RemoteName)
+		fmt.Printf("  URL: %s\n", run.HTMLURL)
+	}
+	return true
+}
+
 func shouldPrint(lastPrinted time.Time, duration time.Duration) bool {
 	now := time.Now()
 	var durToUse time.Duration
@@ -198,13 +267,14 @@ func shouldPrint(lastPrinted time.Time, duration time.Duration) bool {
 	return lastPrinted.Add(durToUse).Before(now)
 }
 
-func doOpen(ctx context.Context, client *ghactions.Client, remote *RemoteURL, branch string) error {
+func doOpen(ctx context.Context, client *ghactions.Client, remote *RemoteURL, remoteName, branch string) error {
 	tip, err := gitTip(ctx, branch)
 	if err != nil {
 		return err
 	}
 
 	owner, repo := remote.Path, remote.RepoName
+	checkedOtherRemotes := false
 
 	for {
 		runs, err := client.Repo(owner, repo).FindWorkflowRunsForCommit(ctx, tip)
@@ -222,6 +292,13 @@ func doOpen(ctx context.Context, client *ghactions.Client, remote *RemoteURL, br
 		}
 
 		if len(runs) == 0 {
+			if !checkedOtherRemotes {
+				checkedOtherRemotes = true
+				results := checkOtherRemotes(ctx, remoteName, tip)
+				if printOtherRemoteHints(results) {
+					return errNoWorkflowRuns
+				}
+			}
 			fmt.Printf("No workflow runs found for %s yet, waiting...\n", tip[:8])
 			select {
 			case <-ctx.Done():
@@ -240,7 +317,7 @@ func doOpen(ctx context.Context, client *ghactions.Client, remote *RemoteURL, br
 	}
 }
 
-func doWait(ctx context.Context, client *ghactions.Client, remote *RemoteURL, branch string, numOutputLines int) error {
+func doWait(ctx context.Context, client *ghactions.Client, remote *RemoteURL, remoteName, branch string, numOutputLines int) error {
 	tip, err := gitTip(ctx, branch)
 	if err != nil {
 		return err
@@ -252,6 +329,7 @@ func doWait(ctx context.Context, client *ghactions.Client, remote *RemoteURL, br
 
 	var lastPrintedAt time.Time
 	startTime := time.Now()
+	checkedOtherRemotes := false
 
 	for {
 		runs, err := client.Repo(owner, repo).FindWorkflowRunsForCommit(ctx, tip)
@@ -270,6 +348,13 @@ func doWait(ctx context.Context, client *ghactions.Client, remote *RemoteURL, br
 		}
 
 		if len(runs) == 0 {
+			if !checkedOtherRemotes {
+				checkedOtherRemotes = true
+				results := checkOtherRemotes(ctx, remoteName, tip)
+				if printOtherRemoteHints(results) {
+					return errNoWorkflowRuns
+				}
+			}
 			fmt.Printf("No workflow runs found for %s yet, waiting...\n", tip[:8])
 			lastPrintedAt = time.Now()
 			select {
