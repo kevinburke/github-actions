@@ -421,12 +421,12 @@ func doWait(ctx context.Context, client *ghactions.Client, remote *RemoteURL, re
 	}
 
 	owner, repo := remote.Path, remote.RepoName
+	renderer := newStatusRenderer(quiet)
 
 	if !quiet {
 		fmt.Println("Waiting for GitHub Actions on", branch, "to complete")
 	}
 
-	var lastPrintedAt time.Time
 	startTime := time.Now()
 	checkedOtherRemotes := false
 	lastSuccessfulPollAt := startTime
@@ -438,7 +438,6 @@ func doWait(ctx context.Context, client *ghactions.Client, remote *RemoteURL, re
 		if err != nil {
 			if isHttpError(err) {
 				lastRetryableErr = err
-				lastPrintedAt = time.Now()
 				if waitErr := waitErrorForRetryablePollFailure(ctx, startTime, lastSuccessfulPollAt, tip, lastObservedRuns, lastRetryableErr); waitErr != nil {
 					return waitErr
 				}
@@ -469,13 +468,17 @@ func doWait(ctx context.Context, client *ghactions.Client, remote *RemoteURL, re
 			if !quiet {
 				fmt.Printf("No workflow runs found for %s yet, waiting...\n", shortRef(tip))
 			}
-			lastPrintedAt = time.Now()
 			select {
 			case <-ctx.Done():
 				return waitTimeoutError(startTime, lastSuccessfulPollAt, tip, lastObservedRuns, lastRetryableErr)
 			case <-time.After(5 * time.Second):
 			}
 			continue
+		}
+
+		// Fetch duration estimates once
+		if !renderer.estimatesDone {
+			renderer.fetchEstimates(ctx, client.Repo(owner, repo), runs)
 		}
 
 		// Check if all runs are complete
@@ -496,9 +499,9 @@ func doWait(ctx context.Context, client *ghactions.Client, remote *RemoteURL, re
 			}
 		}
 
-		elapsed := time.Since(startTime).Round(time.Second)
-
 		if allComplete {
+			renderer.clearStatus()
+
 			c := bigtext.Client{
 				Name: "github-actions (" + repo + ")",
 			}
@@ -548,22 +551,19 @@ func doWait(ctx context.Context, client *ghactions.Client, remote *RemoteURL, re
 			return nil
 		}
 
-		// Still running - print status periodically
-		if !quiet && shouldPrint(lastPrintedAt, elapsed) {
-			for _, run := range runs {
-				status := run.Status
-				if run.IsCompleted() && run.Conclusion != nil {
-					status = *run.Conclusion
-				}
-				fmt.Printf("Workflow %q %s (%s elapsed)\n", run.Name, status, run.Duration().String())
-			}
-			lastPrintedAt = time.Now()
-		}
+		// Still running - render immediately, then redraw every second
+		// until the next poll. In TTY mode this keeps the elapsed
+		// durations ticking smoothly; in non-TTY mode render() applies
+		// its own shouldPrint throttle so extra calls are no-ops.
+		renderer.render(runs)
 
-		select {
-		case <-time.After(3 * time.Second):
-		case <-ctx.Done():
-			return waitTimeoutError(startTime, lastSuccessfulPollAt, tip, lastObservedRuns, lastRetryableErr)
+		for range 3 {
+			select {
+			case <-time.After(1 * time.Second):
+				renderer.render(runs)
+			case <-ctx.Done():
+				return waitTimeoutError(startTime, lastSuccessfulPollAt, tip, lastObservedRuns, lastRetryableErr)
+			}
 		}
 	}
 }

@@ -204,7 +204,8 @@ func readPossiblyCompressed(resp *http.Response) ([]byte, error) {
 	return io.ReadAll(reader)
 }
 
-func isatty() bool {
+// IsATTY returns true if stdout is connected to a terminal.
+func IsATTY() bool {
 	return term.IsTerminal(int(os.Stdout.Fd()))
 }
 
@@ -227,7 +228,7 @@ func buildJobsSummary(jobs []Job) ([]byte, *Job) {
 		}
 
 		durString := duration.String()
-		if job.Failed() && isatty() {
+		if job.Failed() && IsATTY() && os.Getenv("NO_COLOR") == "" {
 			durString = fmt.Sprintf("\033[38;05;160m%-8s\033[0m", duration.String())
 		}
 
@@ -312,6 +313,26 @@ func findBuildFailure(log []byte, numOutputLines int) []byte {
 		newlineIdx = prevNewlineIdx + 1
 	}
 	return log[newlineIdx:]
+}
+
+// ListWorkflowRunsByWorkflow lists workflow runs for a specific workflow.
+func (r *RepoService) ListWorkflowRunsByWorkflow(ctx context.Context, workflowID int64, params url.Values) (*WorkflowRunsResponse, error) {
+	path := fmt.Sprintf("/repos/%s/%s/actions/workflows/%d/runs", r.owner, r.repo, workflowID)
+	if params != nil {
+		path += "?" + params.Encode()
+	}
+
+	req, err := r.client.NewRequestWithContext(ctx, "GET", path, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", userAgent)
+
+	var resp WorkflowRunsResponse
+	if err := r.client.Do(req, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
 }
 
 // FindWorkflowRunsForCommit finds workflow runs matching a specific commit SHA.

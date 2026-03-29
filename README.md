@@ -32,6 +32,11 @@ Flags:
 - `--remote` - Git remote to use (default "origin")
 - `--timeout` - Maximum time to wait (default 1h)
 - `--failed-output-lines` - Number of lines of failed output to display (default 100)
+- `--quiet` - Only print final output, not periodic status updates
+
+When stdout is a terminal, `wait` displays an in-place status table with
+spinners and color-coded icons that updates every 3 seconds. When piped or
+redirected, it falls back to appended plain-text lines.
 
 Examples:
 ```bash
@@ -90,3 +95,8 @@ The token needs the `repo` scope (or `actions:read` for public repositories) to
 access workflow run information.
 
 Create a token at: https://github.com/settings/tokens
+
+## Environment variables
+
+- `GH_TOKEN` or `GITHUB_TOKEN` - GitHub API token
+- `NO_COLOR` - Set to any value to disable colored output (see https://no-color.org)
