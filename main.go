@@ -268,6 +268,102 @@ func shouldPrint(lastPrinted time.Time, duration time.Duration) bool {
 	return lastPrinted.Add(durToUse).Before(now)
 }
 
+func shortRef(ref string) string {
+	if len(ref) > 8 {
+		return ref[:8]
+	}
+	return ref
+}
+
+func clampDuration(d, min, max time.Duration) time.Duration {
+	if d < min {
+		return min
+	}
+	if d > max {
+		return max
+	}
+	return d
+}
+
+func formatWaitDuration(d time.Duration) string {
+	if d <= 0 {
+		return "0s"
+	}
+	if d >= time.Second {
+		return d.Round(time.Second).String()
+	}
+	return d.Round(100 * time.Millisecond).String()
+}
+
+func estimateRemainingWait(runs []ghactions.WorkflowRun) time.Duration {
+	var longestCompleted time.Duration
+	for _, run := range runs {
+		if !run.IsCompleted() {
+			continue
+		}
+		if d := run.Duration(); d > longestCompleted {
+			longestCompleted = d
+		}
+	}
+
+	var remaining time.Duration
+	for _, run := range runs {
+		if run.IsCompleted() {
+			continue
+		}
+		elapsed := run.Duration()
+		var estimate time.Duration
+		switch {
+		case longestCompleted > elapsed:
+			estimate = longestCompleted - elapsed
+		case longestCompleted > 0:
+			estimate = clampDuration(elapsed/10, time.Minute, 5*time.Minute)
+		case elapsed > 0:
+			estimate = max(elapsed, 2*time.Minute)
+		default:
+			estimate = 2 * time.Minute
+		}
+		if estimate > remaining {
+			remaining = estimate
+		}
+	}
+	return remaining
+}
+
+func networkStallBudget(runs []ghactions.WorkflowRun) time.Duration {
+	const (
+		minBudget = 2 * time.Minute
+		maxBudget = 20 * time.Minute
+	)
+	if len(runs) == 0 {
+		return minBudget
+	}
+	remaining := estimateRemainingWait(runs)
+	return clampDuration(2*time.Minute+remaining/2, minBudget, maxBudget)
+}
+
+func waitTimeoutError(startTime, lastSuccessfulPollAt time.Time, tip string, runs []ghactions.WorkflowRun, lastRetryableErr error) error {
+	totalWait := formatWaitDuration(time.Since(startTime))
+	if lastRetryableErr != nil {
+		stalledFor := formatWaitDuration(time.Since(lastSuccessfulPollAt))
+		return fmt.Errorf("could not reach GitHub for %s after retrying (waited %s total; last error: %s)", stalledFor, totalWait, ghactions.ShortRetryableError(lastRetryableErr))
+	}
+	if len(runs) == 0 {
+		return fmt.Errorf("timed out after waiting %s for workflow runs to appear for %s (hit --timeout, not a network error; increase it if they usually start later)", totalWait, shortRef(tip))
+	}
+	return fmt.Errorf("timed out after waiting %s for workflow runs to complete (hit --timeout, not a network error; increase it if this branch usually runs longer)", totalWait)
+}
+
+func waitErrorForRetryablePollFailure(ctx context.Context, startTime, lastSuccessfulPollAt time.Time, tip string, runs []ghactions.WorkflowRun, lastRetryableErr error) error {
+	if ctx.Err() != nil {
+		return waitTimeoutError(startTime, lastSuccessfulPollAt, tip, runs, nil)
+	}
+	if time.Since(lastSuccessfulPollAt) >= networkStallBudget(runs) {
+		return waitTimeoutError(startTime, lastSuccessfulPollAt, tip, runs, lastRetryableErr)
+	}
+	return nil
+}
+
 func doOpen(ctx context.Context, client *ghactions.Client, remote *RemoteURL, remoteName, branch string) error {
 	tip, err := gitTip(ctx, branch)
 	if err != nil {
@@ -333,24 +429,34 @@ func doWait(ctx context.Context, client *ghactions.Client, remote *RemoteURL, re
 	var lastPrintedAt time.Time
 	startTime := time.Now()
 	checkedOtherRemotes := false
+	lastSuccessfulPollAt := startTime
+	var lastObservedRuns []ghactions.WorkflowRun
+	var lastRetryableErr error
 
 	for {
 		runs, err := client.Repo(owner, repo).FindWorkflowRunsForCommit(ctx, tip)
 		if err != nil {
 			if isHttpError(err) {
-				if !quiet {
-					fmt.Printf("Caught network error: %s. Continuing\n", err.Error())
-				}
+				lastRetryableErr = err
 				lastPrintedAt = time.Now()
+				if waitErr := waitErrorForRetryablePollFailure(ctx, startTime, lastSuccessfulPollAt, tip, lastObservedRuns, lastRetryableErr); waitErr != nil {
+					return waitErr
+				}
+				if !quiet {
+					fmt.Printf("GitHub request failed: %s. Retrying\n", ghactions.ShortRetryableError(err))
+				}
 				select {
 				case <-ctx.Done():
-					return ctx.Err()
+					return waitTimeoutError(startTime, lastSuccessfulPollAt, tip, lastObservedRuns, nil)
 				case <-time.After(2 * time.Second):
 				}
 				continue
 			}
 			return err
 		}
+		lastSuccessfulPollAt = time.Now()
+		lastRetryableErr = nil
+		lastObservedRuns = append(lastObservedRuns[:0], runs...)
 
 		if len(runs) == 0 {
 			if !checkedOtherRemotes {
@@ -361,12 +467,12 @@ func doWait(ctx context.Context, client *ghactions.Client, remote *RemoteURL, re
 				}
 			}
 			if !quiet {
-				fmt.Printf("No workflow runs found for %s yet, waiting...\n", tip[:8])
+				fmt.Printf("No workflow runs found for %s yet, waiting...\n", shortRef(tip))
 			}
 			lastPrintedAt = time.Now()
 			select {
 			case <-ctx.Done():
-				return ctx.Err()
+				return waitTimeoutError(startTime, lastSuccessfulPollAt, tip, lastObservedRuns, lastRetryableErr)
 			case <-time.After(5 * time.Second):
 			}
 			continue
@@ -457,7 +563,7 @@ func doWait(ctx context.Context, client *ghactions.Client, remote *RemoteURL, re
 		select {
 		case <-time.After(3 * time.Second):
 		case <-ctx.Done():
-			return ctx.Err()
+			return waitTimeoutError(startTime, lastSuccessfulPollAt, tip, lastObservedRuns, lastRetryableErr)
 		}
 	}
 }

@@ -1,6 +1,7 @@
 package lib
 
 import (
+	"context"
 	"errors"
 	"io"
 	"math"
@@ -19,11 +20,7 @@ func IsRetryableError(err error) bool {
 		return false
 	}
 
-	// Unwrap *url.Error (returned by http.Client.Do).
-	var uerr *url.Error
-	if errors.As(err, &uerr) {
-		err = uerr.Err
-	}
+	err = unwrapRetryableError(err)
 
 	// Connection reset by peer.
 	if isConnReset(err) {
@@ -68,6 +65,56 @@ func IsRetryableError(err error) bool {
 	}
 
 	return false
+}
+
+func unwrapRetryableError(err error) error {
+	var uerr *url.Error
+	if errors.As(err, &uerr) {
+		return uerr.Err
+	}
+	return err
+}
+
+// ShortRetryableError returns a compact description of a transient network
+// error suitable for user-facing retry logs.
+func ShortRetryableError(err error) string {
+	if err == nil {
+		return ""
+	}
+
+	err = unwrapRetryableError(err)
+
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return "request timed out"
+	case isConnReset(err):
+		return "connection reset"
+	case isConnRefused(err):
+		return "connection refused"
+	case errors.Is(err, io.ErrUnexpectedEOF), errors.Is(err, io.EOF):
+		return "connection closed unexpectedly"
+	}
+
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return "DNS lookup failed"
+	}
+
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return "request timed out"
+	}
+
+	if strings.Contains(err.Error(), "TLS handshake") {
+		return "TLS handshake failed"
+	}
+
+	var opErr *net.OpError
+	if errors.As(err, &opErr) {
+		return "network error"
+	}
+
+	return err.Error()
 }
 
 // retryTransport wraps an http.RoundTripper and retries requests that fail
