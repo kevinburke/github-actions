@@ -130,7 +130,8 @@ func (r *RepoService) GetWorkflowRun(ctx context.Context, runID int64) (*Workflo
 	return &resp, nil
 }
 
-// ListJobs lists jobs for a workflow run.
+// ListJobs lists jobs for a workflow run. Results are paginated; set "page"
+// and "per_page" in params to control pagination.
 // https://docs.github.com/en/rest/actions/workflow-jobs#list-jobs-for-a-workflow-run
 func (r *RepoService) ListJobs(ctx context.Context, runID int64, params url.Values) (*JobsResponse, error) {
 	path := fmt.Sprintf("/repos/%s/%s/actions/runs/%d/jobs", r.owner, r.repo, runID)
@@ -149,6 +150,32 @@ func (r *RepoService) ListJobs(ctx context.Context, runID int64, params url.Valu
 		return nil, err
 	}
 	return &resp, nil
+}
+
+// FindFailedJob checks a workflow run's jobs (across all pages) and returns
+// the first failed job, or nil if no jobs have failed yet.
+func (r *RepoService) FindFailedJob(ctx context.Context, runID int64) (*Job, error) {
+	page := 1
+	for {
+		params := url.Values{
+			"per_page": []string{"100"},
+			"page":     []string{strconv.Itoa(page)},
+		}
+		resp, err := r.ListJobs(ctx, runID, params)
+		if err != nil {
+			return nil, err
+		}
+		for i := range resp.Jobs {
+			if resp.Jobs[i].Failed() {
+				return &resp.Jobs[i], nil
+			}
+		}
+		if len(resp.Jobs) == 0 || page*100 >= resp.TotalCount {
+			break
+		}
+		page++
+	}
+	return nil, nil
 }
 
 // GetJobLogs downloads the logs for a job.

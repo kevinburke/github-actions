@@ -502,6 +502,7 @@ func doWait(ctx context.Context, client *ghactions.Client, remote *RemoteURL, re
 		fmt.Println("Waiting for GitHub Actions on", branch, "to complete")
 	}
 
+	var lastJobCheckAt time.Time
 	startTime := time.Now()
 	checkedOtherRemotes := false
 	lastSuccessfulPollAt := startTime
@@ -574,9 +575,41 @@ func doWait(ctx context.Context, client *ghactions.Client, remote *RemoteURL, re
 			}
 		}
 
-		if allComplete {
-			renderer.clearStatus()
+		elapsed := time.Since(startTime).Round(time.Second)
 
+		// Check for early job failures in in-progress runs. We throttle
+		// these checks to avoid excessive API calls - check every 15
+		// seconds, and only after the runs have been going for at least
+		// 30 seconds (to let jobs start up).
+		if !allComplete && !anyFailed && elapsed > 30*time.Second && time.Since(lastJobCheckAt) > 15*time.Second {
+			lastJobCheckAt = time.Now()
+			repoSvc := client.Repo(owner, repo)
+			for i := range runs {
+				run := &runs[i]
+				if run.IsCompleted() {
+					continue
+				}
+				failedJob, err := repoSvc.FindFailedJob(ctx, run.ID)
+				if err != nil {
+					// Non-fatal: log and continue polling normally.
+					if !quiet {
+						fmt.Printf("Error checking jobs for %q: %v\n", run.Name, err)
+					}
+					continue
+				}
+				if failedJob != nil {
+					anyFailed = true
+					failedRun = run
+					if !quiet {
+						fmt.Printf("Job %q failed in workflow %q (run still in progress)\n", failedJob.Name, run.Name)
+					}
+					break
+				}
+			}
+		}
+
+		if allComplete || anyFailed {
+			renderer.clearStatus()
 			c := bigtext.Client{
 				Name: "github-actions (" + repo + ")",
 			}
