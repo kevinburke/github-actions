@@ -59,6 +59,7 @@ func main() {
 	waitRemote := waitflags.String("remote", "origin", "Git remote to use")
 	waitOutputLines := waitflags.Int("failed-output-lines", 100, "Number of lines of failed output to display")
 	waitTimeout := waitflags.Duration("timeout", time.Hour, "Maximum time to wait")
+	waitQuiet := waitflags.Bool("quiet", false, "Only print final output, not periodic status updates")
 
 	waitflags.Usage = func() {
 		fmt.Fprintf(os.Stderr, `usage: wait [refspec]
@@ -120,7 +121,7 @@ Open the GitHub Actions workflow run for the current branch in your browser.
 		ctx, cancel := context.WithTimeout(ctx, *waitTimeout)
 		defer cancel()
 
-		err = doWait(ctx, client, remote, *waitRemote, branch, *waitOutputLines)
+		err = doWait(ctx, client, remote, *waitRemote, branch, *waitOutputLines, *waitQuiet)
 		checkError(err, "waiting for workflow runs")
 
 	case "open":
@@ -317,7 +318,7 @@ func doOpen(ctx context.Context, client *ghactions.Client, remote *RemoteURL, re
 	}
 }
 
-func doWait(ctx context.Context, client *ghactions.Client, remote *RemoteURL, remoteName, branch string, numOutputLines int) error {
+func doWait(ctx context.Context, client *ghactions.Client, remote *RemoteURL, remoteName, branch string, numOutputLines int, quiet bool) error {
 	tip, err := gitTip(ctx, branch)
 	if err != nil {
 		return err
@@ -325,7 +326,9 @@ func doWait(ctx context.Context, client *ghactions.Client, remote *RemoteURL, re
 
 	owner, repo := remote.Path, remote.RepoName
 
-	fmt.Println("Waiting for GitHub Actions on", branch, "to complete")
+	if !quiet {
+		fmt.Println("Waiting for GitHub Actions on", branch, "to complete")
+	}
 
 	var lastPrintedAt time.Time
 	startTime := time.Now()
@@ -335,7 +338,9 @@ func doWait(ctx context.Context, client *ghactions.Client, remote *RemoteURL, re
 		runs, err := client.Repo(owner, repo).FindWorkflowRunsForCommit(ctx, tip)
 		if err != nil {
 			if isHttpError(err) {
-				fmt.Printf("Caught network error: %s. Continuing\n", err.Error())
+				if !quiet {
+					fmt.Printf("Caught network error: %s. Continuing\n", err.Error())
+				}
 				lastPrintedAt = time.Now()
 				select {
 				case <-ctx.Done():
@@ -355,7 +360,9 @@ func doWait(ctx context.Context, client *ghactions.Client, remote *RemoteURL, re
 					return errNoWorkflowRuns
 				}
 			}
-			fmt.Printf("No workflow runs found for %s yet, waiting...\n", tip[:8])
+			if !quiet {
+				fmt.Printf("No workflow runs found for %s yet, waiting...\n", tip[:8])
+			}
 			lastPrintedAt = time.Now()
 			select {
 			case <-ctx.Done():
@@ -436,7 +443,7 @@ func doWait(ctx context.Context, client *ghactions.Client, remote *RemoteURL, re
 		}
 
 		// Still running - print status periodically
-		if shouldPrint(lastPrintedAt, elapsed) {
+		if !quiet && shouldPrint(lastPrintedAt, elapsed) {
 			for _, run := range runs {
 				status := run.Status
 				if run.IsCompleted() && run.Conclusion != nil {
