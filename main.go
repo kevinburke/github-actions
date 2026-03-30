@@ -33,6 +33,7 @@ Usage:
 
 The commands are:
 
+	cancel              Cancel older workflow runs on a branch
 	open                Open the workflow run in your browser
 	version             Print the current version
 	wait                Wait for workflow runs to finish on a branch.
@@ -53,8 +54,21 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	cancelflags := flag.NewFlagSet("cancel", flag.ExitOnError)
 	waitflags := flag.NewFlagSet("wait", flag.ExitOnError)
 	openflags := flag.NewFlagSet("open", flag.ExitOnError)
+
+	cancelRemote := cancelflags.String("remote", "origin", "Git remote to use")
+	cancelflags.Usage = func() {
+		fmt.Fprintf(os.Stderr, `usage: cancel [branch]
+
+Cancel in-progress and queued workflow runs on a branch that were triggered by
+older commits. Runs for the current branch tip are left alone. By default, uses
+the current branch.
+
+`)
+		cancelflags.PrintDefaults()
+	}
 
 	waitRemote := waitflags.String("remote", "origin", "Git remote to use")
 	waitOutputLines := waitflags.Int("failed-output-lines", 100, "Number of lines of failed output to display")
@@ -103,6 +117,24 @@ Open the GitHub Actions workflow run for the current branch in your browser.
 	}
 
 	switch flag.Arg(0) {
+	case "cancel":
+		cancelflags.Parse(subargs)
+		args := cancelflags.Args()
+		branch, err := getBranchFromArgs(ctx, args)
+		checkError(err, "getting git branch")
+
+		remote, err := getRemoteURL(ctx, *cancelRemote)
+		checkError(err, "loading git info")
+
+		host := remote.Host
+		token, err := ghactions.GetToken(ctx, host)
+		checkError(err, "getting GitHub token")
+
+		client := ghactions.NewClient(token, host)
+
+		err = doCancel(ctx, client, remote, *cancelRemote, branch)
+		checkError(err, "cancelling workflow runs")
+
 	case "wait":
 		waitflags.Parse(subargs)
 		args := waitflags.Args()
@@ -360,6 +392,49 @@ func waitErrorForRetryablePollFailure(ctx context.Context, startTime, lastSucces
 	}
 	if time.Since(lastSuccessfulPollAt) >= networkStallBudget(runs) {
 		return waitTimeoutError(startTime, lastSuccessfulPollAt, tip, runs, lastRetryableErr)
+	}
+	return nil
+}
+
+func doCancel(ctx context.Context, client *ghactions.Client, remote *RemoteURL, remoteName, branch string) error {
+	tip, err := gitTip(ctx, branch)
+	if err != nil {
+		return err
+	}
+
+	owner, repo := remote.Path, remote.RepoName
+	runs, err := client.Repo(owner, repo).FindWorkflowRunsForBranch(ctx, branch)
+	if err != nil {
+		return fmt.Errorf("listing workflow runs: %w", err)
+	}
+
+	if len(runs) == 0 {
+		fmt.Printf("No workflow runs found for %s on %s/%s\n", branch, owner, repo)
+		results := checkOtherRemotes(ctx, remoteName, tip)
+		printOtherRemoteHints(results)
+		return errNoWorkflowRuns
+	}
+
+	var cancelled int
+	for _, run := range runs {
+		if run.IsCompleted() {
+			continue
+		}
+		if run.HeadSha == tip {
+			continue
+		}
+		slog.Debug("cancelling run", "id", run.ID, "name", run.Name, "sha", shortRef(run.HeadSha))
+		if err := client.Repo(owner, repo).CancelWorkflowRun(ctx, run.ID); err != nil {
+			return fmt.Errorf("cancelling run %d (%s): %w", run.ID, run.Name, err)
+		}
+		fmt.Printf("Cancelled %q (run %d, commit %s)\n", run.Name, run.RunNumber, shortRef(run.HeadSha))
+		cancelled++
+	}
+
+	if cancelled == 0 {
+		fmt.Printf("No older workflow runs to cancel on %s (tip: %s)\n", branch, shortRef(tip))
+	} else {
+		fmt.Printf("Cancelled %d older workflow run(s) on %s\n", cancelled, branch)
 	}
 	return nil
 }
