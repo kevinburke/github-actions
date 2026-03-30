@@ -15,6 +15,7 @@ go install github.com/kevinburke/github-actions@latest
 github-actions command [arguments]
 
 Commands:
+    cancel    Cancel older workflow runs on a branch
     open      Open the workflow run in your browser
     version   Print the current version
     wait      Wait for workflow runs to finish on a branch
@@ -33,6 +34,7 @@ Flags:
 - `--timeout` - Maximum time to wait (default 1h)
 - `--failed-output-lines` - Number of lines of failed output to display (default 100)
 - `--quiet` - Only print final output, not periodic status updates
+- `--cancel-previous-runs` - Cancel older queued or in-progress workflow runs before waiting
 
 When stdout is a terminal, `wait` displays an in-place status table with
 spinners and color-coded icons that updates every 3 seconds. When piped or
@@ -48,7 +50,22 @@ github-actions wait main
 
 # Wait with a 30 minute timeout
 github-actions wait --timeout 30m
+
+# Cancel older runs before waiting for the current commit
+github-actions wait --cancel-previous-runs
 ```
+
+### cancel
+
+Cancel queued or in-progress workflow runs from older commits on a branch while
+leaving the current branch tip alone.
+
+```bash
+github-actions cancel [flags] [branch]
+```
+
+Flags:
+- `--remote` - Git remote to use (default "origin")
 
 ### open
 

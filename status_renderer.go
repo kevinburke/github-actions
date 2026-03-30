@@ -142,8 +142,9 @@ func (s *statusRenderer) renderTTY(runs []ghactions.WorkflowRun) {
 	// Find the longest workflow name for alignment
 	maxName := 0
 	for _, run := range runs {
-		if len(run.Name) > maxName {
-			maxName = len(run.Name)
+		displayName := workflowRunDisplayName(run)
+		if len(displayName) > maxName {
+			maxName = len(displayName)
 		}
 	}
 
@@ -165,14 +166,15 @@ func (s *statusRenderer) renderTTY(runs []ghactions.WorkflowRun) {
 			statusText = *run.Conclusion
 		}
 
+		displayName := workflowRunDisplayName(run)
 		line := fmt.Sprintf("  %s %-*s  %-12s %8s%s",
-			icon, maxName, run.Name, statusText, durStr, estimate)
+			icon, maxName, displayName, statusText, durStr, estimate)
 
 		if color != "" && !s.noColor {
 			// Apply color to the icon and status text, with \033[0m (reset)
 			// after each colored span to return to default terminal colors.
 			line = fmt.Sprintf("  %s%s\033[0m %-*s  %s%-12s\033[0m %8s%s",
-				color, icon, maxName, run.Name, color, statusText, durStr, estimate)
+				color, icon, maxName, displayName, color, statusText, durStr, estimate)
 		}
 
 		// \033[2K erases the entire current line, then we print the new content.
@@ -195,7 +197,7 @@ func (s *statusRenderer) renderPlain(runs []ghactions.WorkflowRun) {
 		if run.IsCompleted() && run.Conclusion != nil {
 			status = *run.Conclusion
 		}
-		fmt.Printf("Workflow %q %s (%s elapsed)\n", run.Name, status, run.Duration().String())
+		fmt.Printf("Workflow %q %s (%s elapsed)\n", workflowRunDisplayName(run), status, run.Duration().String())
 	}
 	s.lastPrintedAt = time.Now()
 }

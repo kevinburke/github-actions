@@ -74,6 +74,7 @@ the current branch.
 	waitOutputLines := waitflags.Int("failed-output-lines", 100, "Number of lines of failed output to display")
 	waitTimeout := waitflags.Duration("timeout", time.Hour, "Maximum time to wait")
 	waitQuiet := waitflags.Bool("quiet", false, "Only print final output, not periodic status updates")
+	waitCancelPreviousRuns := waitflags.Bool("cancel-previous-runs", false, "Cancel older queued or in-progress workflow runs before waiting")
 
 	waitflags.Usage = func() {
 		fmt.Fprintf(os.Stderr, `usage: wait [refspec]
@@ -153,7 +154,7 @@ Open the GitHub Actions workflow run for the current branch in your browser.
 		ctx, cancel := context.WithTimeout(ctx, *waitTimeout)
 		defer cancel()
 
-		err = doWait(ctx, client, remote, *waitRemote, branch, *waitOutputLines, *waitQuiet)
+		err = doWait(ctx, client, remote, *waitRemote, branch, *waitOutputLines, *waitQuiet, *waitCancelPreviousRuns)
 		checkError(err, "waiting for workflow runs")
 
 	case "open":
@@ -396,26 +397,41 @@ func waitErrorForRetryablePollFailure(ctx context.Context, startTime, lastSucces
 	return nil
 }
 
-func doCancel(ctx context.Context, client *ghactions.Client, remote *RemoteURL, remoteName, branch string) error {
-	tip, err := gitTip(ctx, branch)
-	if err != nil {
-		return err
+func pluralize(count int, singular string) string {
+	if count == 1 {
+		return singular
 	}
+	return singular + "s"
+}
 
-	owner, repo := remote.Path, remote.RepoName
-	runs, err := client.Repo(owner, repo).FindWorkflowRunsForBranch(ctx, branch)
-	if err != nil {
-		return fmt.Errorf("listing workflow runs: %w", err)
+func workflowRunIdentifier(run ghactions.WorkflowRun) string {
+	switch {
+	case run.RunNumber > 0:
+		return fmt.Sprintf("run %d", run.RunNumber)
+	default:
+		return ""
 	}
+}
 
-	if len(runs) == 0 {
-		fmt.Printf("No workflow runs found for %s on %s/%s\n", branch, owner, repo)
-		results := checkOtherRemotes(ctx, remoteName, tip)
-		printOtherRemoteHints(results)
-		return errNoWorkflowRuns
+func workflowRunDisplayName(run ghactions.WorkflowRun) string {
+	id := workflowRunIdentifier(run)
+	if id == "" {
+		return run.Name
 	}
+	return fmt.Sprintf("%s [%s]", run.Name, id)
+}
 
-	var cancelled int
+func hasWorkflowRunsForCommit(tip string, runs []ghactions.WorkflowRun) bool {
+	for _, run := range runs {
+		if run.HeadSha == tip {
+			return true
+		}
+	}
+	return false
+}
+
+func cancelableWorkflowRuns(tip string, runs []ghactions.WorkflowRun) []ghactions.WorkflowRun {
+	cancelable := make([]ghactions.WorkflowRun, 0, len(runs))
 	for _, run := range runs {
 		if run.IsCompleted() {
 			continue
@@ -423,20 +439,62 @@ func doCancel(ctx context.Context, client *ghactions.Client, remote *RemoteURL, 
 		if run.HeadSha == tip {
 			continue
 		}
+		cancelable = append(cancelable, run)
+	}
+	return cancelable
+}
+
+func cancelPreviousRunsForTip(ctx context.Context, client *ghactions.Client, remote *RemoteURL, remoteName, branch, tip string, quietWhenNoRuns bool) error {
+	owner, repo := remote.Path, remote.RepoName
+	runs, err := client.Repo(owner, repo).FindWorkflowRunsForBranch(ctx, branch)
+	if err != nil {
+		return fmt.Errorf("listing workflow runs: %w", err)
+	}
+
+	if len(runs) == 0 {
+		if !quietWhenNoRuns {
+			fmt.Printf("No workflow runs found for %s on %s/%s\n", branch, owner, repo)
+			results := checkOtherRemotes(ctx, remoteName, tip)
+			printOtherRemoteHints(results)
+		}
+		return errNoWorkflowRuns
+	}
+
+	cancelable := cancelableWorkflowRuns(tip, runs)
+	var cancelled int
+	for _, run := range cancelable {
 		slog.Debug("cancelling run", "id", run.ID, "name", run.Name, "sha", shortRef(run.HeadSha))
 		if err := client.Repo(owner, repo).CancelWorkflowRun(ctx, run.ID); err != nil {
 			return fmt.Errorf("cancelling run %d (%s): %w", run.ID, run.Name, err)
 		}
-		fmt.Printf("Cancelled %q (run %d, commit %s)\n", run.Name, run.RunNumber, shortRef(run.HeadSha))
+		identifier := workflowRunIdentifier(run)
+		if identifier == "" {
+			fmt.Printf("Cancelled %q (commit %s)\n", run.Name, shortRef(run.HeadSha))
+		} else {
+			fmt.Printf("Cancelled %q (%s, commit %s)\n", run.Name, identifier, shortRef(run.HeadSha))
+		}
 		cancelled++
 	}
 
 	if cancelled == 0 {
 		fmt.Printf("No older workflow runs to cancel on %s (tip: %s)\n", branch, shortRef(tip))
 	} else {
-		fmt.Printf("Cancelled %d older workflow run(s) on %s\n", cancelled, branch)
+		fmt.Printf("Cancelled %d older %s on %s\n", cancelled, pluralize(cancelled, "workflow run"), branch)
 	}
 	return nil
+}
+
+func cancelPreviousRunsOnBranch(ctx context.Context, client *ghactions.Client, remote *RemoteURL, remoteName, branch string, quietWhenNoRuns bool) (string, error) {
+	tip, err := gitTip(ctx, branch)
+	if err != nil {
+		return "", err
+	}
+	return tip, cancelPreviousRunsForTip(ctx, client, remote, remoteName, branch, tip, quietWhenNoRuns)
+}
+
+func doCancel(ctx context.Context, client *ghactions.Client, remote *RemoteURL, remoteName, branch string) error {
+	_, err := cancelPreviousRunsOnBranch(ctx, client, remote, remoteName, branch, false)
+	return err
 }
 
 func doOpen(ctx context.Context, client *ghactions.Client, remote *RemoteURL, remoteName, branch string) error {
@@ -489,7 +547,7 @@ func doOpen(ctx context.Context, client *ghactions.Client, remote *RemoteURL, re
 	}
 }
 
-func doWait(ctx context.Context, client *ghactions.Client, remote *RemoteURL, remoteName, branch string, numOutputLines int, quiet bool) error {
+func doWait(ctx context.Context, client *ghactions.Client, remote *RemoteURL, remoteName, branch string, numOutputLines int, quiet, cancelPreviousRuns bool) error {
 	tip, err := gitTip(ctx, branch)
 	if err != nil {
 		return err
@@ -497,6 +555,7 @@ func doWait(ctx context.Context, client *ghactions.Client, remote *RemoteURL, re
 
 	owner, repo := remote.Path, remote.RepoName
 	renderer := newStatusRenderer(quiet)
+	cancelledPreviousRuns := false
 
 	if !quiet {
 		fmt.Println("Waiting for GitHub Actions on", branch, "to complete")
@@ -550,6 +609,13 @@ func doWait(ctx context.Context, client *ghactions.Client, remote *RemoteURL, re
 			case <-time.After(5 * time.Second):
 			}
 			continue
+		}
+
+		if cancelPreviousRuns && !cancelledPreviousRuns && hasWorkflowRunsForCommit(tip, runs) {
+			if err := cancelPreviousRunsForTip(ctx, client, remote, remoteName, branch, tip, true); err != nil {
+				return err
+			}
+			cancelledPreviousRuns = true
 		}
 
 		// Fetch duration estimates once
@@ -632,7 +698,12 @@ func doWait(ctx context.Context, client *ghactions.Client, remote *RemoteURL, re
 			}
 
 			for _, run := range runs {
-				fmt.Printf("\nWorkflow %q (run %d)\n", run.Name, run.RunNumber)
+				identifier := workflowRunIdentifier(run)
+				if identifier == "" {
+					fmt.Printf("\nWorkflow %q\n", run.Name)
+				} else {
+					fmt.Printf("\nWorkflow %q (%s)\n", run.Name, identifier)
+				}
 				summary := client.BuildJobsSummary(ctx, owner, repo, run)
 				if len(summary) > 0 && summary[0] == '\n' {
 					summary = summary[1:]

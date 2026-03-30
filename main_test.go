@@ -182,3 +182,100 @@ func TestWaitErrorForRetryablePollFailurePrefersTopLevelTimeout(t *testing.T) {
 		}
 	}
 }
+
+func TestPluralize(t *testing.T) {
+	tests := []struct {
+		name     string
+		count    int
+		singular string
+		want     string
+	}{
+		{name: "zero", count: 0, singular: "workflow run", want: "workflow runs"},
+		{name: "one", count: 1, singular: "workflow run", want: "workflow run"},
+		{name: "two", count: 2, singular: "workflow run", want: "workflow runs"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := pluralize(tt.count, tt.singular); got != tt.want {
+				t.Fatalf("pluralize(%d, %q) = %q, want %q", tt.count, tt.singular, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestWorkflowRunIdentifier(t *testing.T) {
+	tests := []struct {
+		name string
+		run  ghactions.WorkflowRun
+		want string
+	}{
+		{
+			name: "run_number_only",
+			run: ghactions.WorkflowRun{
+				RunNumber: 49,
+				ID:        123456789,
+			},
+			want: "run 49",
+		},
+		{
+			name: "empty",
+			run:  ghactions.WorkflowRun{},
+			want: "",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := workflowRunIdentifier(tt.run); got != tt.want {
+				t.Fatalf("workflowRunIdentifier(%+v) = %q, want %q", tt.run, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestWorkflowRunDisplayName(t *testing.T) {
+	run := ghactions.WorkflowRun{
+		Name:      "CI",
+		RunNumber: 49,
+		ID:        123456789,
+	}
+	if got := workflowRunDisplayName(run); got != "CI [run 49]" {
+		t.Fatalf("workflowRunDisplayName() = %q", got)
+	}
+
+	run = ghactions.WorkflowRun{Name: "CI"}
+	if got := workflowRunDisplayName(run); got != "CI" {
+		t.Fatalf("workflowRunDisplayName() without identifier = %q", got)
+	}
+}
+
+func TestHasWorkflowRunsForCommit(t *testing.T) {
+	tip := "tipsha"
+	runs := []ghactions.WorkflowRun{
+		{Name: "CI", HeadSha: "oldsha"},
+		{Name: "CI", HeadSha: tip},
+	}
+	if !hasWorkflowRunsForCommit(tip, runs) {
+		t.Fatal("hasWorkflowRunsForCommit() = false, want true")
+	}
+	if hasWorkflowRunsForCommit("missing", runs) {
+		t.Fatal("hasWorkflowRunsForCommit() = true for missing sha, want false")
+	}
+}
+
+func TestCancelableWorkflowRuns(t *testing.T) {
+	tip := "tipsha"
+	runs := []ghactions.WorkflowRun{
+		{ID: 1, Status: "completed", HeadSha: "old-1"},
+		{ID: 2, Status: "queued", HeadSha: "old-2"},
+		{ID: 3, Status: "in_progress", HeadSha: tip},
+		{ID: 4, Status: "in_progress", HeadSha: "old-3"},
+	}
+
+	got := cancelableWorkflowRuns(tip, runs)
+	if len(got) != 2 {
+		t.Fatalf("len(cancelableWorkflowRuns()) = %d, want 2", len(got))
+	}
+	if got[0].ID != 2 || got[1].ID != 4 {
+		t.Fatalf("cancelableWorkflowRuns() = %#v, want runs 2 and 4", got)
+	}
+}
