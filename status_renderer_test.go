@@ -123,6 +123,34 @@ func TestDurationString(t *testing.T) {
 	}
 }
 
+func TestDurationParts(t *testing.T) {
+	tests := []struct {
+		d         time.Duration
+		wantMajor string
+		wantMinor string
+	}{
+		{0, "", "0s"},
+		{5 * time.Second, "", "5s"},
+		{59 * time.Second, "", "59s"},
+		{60 * time.Second, "1m", ""},
+		{90 * time.Second, "1m", "30s"},
+		{5*time.Minute + 32*time.Second, "5m", "32s"},
+		{15 * time.Minute, "15m", ""},
+		{time.Hour + 2*time.Minute, "1h2m", ""},
+		{2*time.Hour + 36*time.Minute, "2h36m", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.wantMajor+tt.wantMinor, func(t *testing.T) {
+			gotMajor, gotMinor := durationParts(tt.d)
+			if gotMajor != tt.wantMajor || gotMinor != tt.wantMinor {
+				t.Errorf("durationParts(%v) = (%q, %q), want (%q, %q)",
+					tt.d, gotMajor, gotMinor, tt.wantMajor, tt.wantMinor)
+			}
+		})
+	}
+}
+
 func TestFormatEstimate(t *testing.T) {
 	tests := []struct {
 		d    time.Duration
@@ -229,6 +257,62 @@ func TestRenderTTYOutput(t *testing.T) {
 	}
 	if s.lastLines != 3 {
 		t.Errorf("lastLines = %d, want 3", s.lastLines)
+	}
+}
+
+func TestRenderTTYAlignment(t *testing.T) {
+	now := time.Now()
+	s := &statusRenderer{
+		isTTY:   true,
+		noColor: true,
+		quiet:   false,
+		estimates: map[int64]time.Duration{
+			2: 13 * time.Minute,
+			3: 65 * time.Minute,
+			4: 2 * time.Hour,
+		},
+		estimatesDone: true,
+	}
+
+	runs := []ghactions.WorkflowRun{
+		{
+			Name:         "CI self-hosted",
+			Status:       "completed",
+			Conclusion:   ptr("skipped"),
+			WorkflowID:   1,
+			RunNumber:    67,
+			RunStartedAt: timePtr(now.Add(-2 * time.Second)),
+			UpdatedAt:    now,
+		},
+		{
+			Name:         "CIFuzz",
+			Status:       "in_progress",
+			WorkflowID:   2,
+			RunNumber:    67,
+			RunStartedAt: timePtr(now.Add(-27 * time.Second)),
+			UpdatedAt:    now,
+		},
+		{
+			Name:         "CI VM",
+			Status:       "queued",
+			WorkflowID:   3,
+			RunNumber:    67,
+			RunStartedAt: timePtr(now.Add(-27 * time.Second)),
+			UpdatedAt:    now,
+		},
+		{
+			Name:         "CI",
+			Status:       "queued",
+			WorkflowID:   4,
+			RunNumber:    69,
+			RunStartedAt: timePtr(now.Add(-27 * time.Second)),
+			UpdatedAt:    now,
+		},
+	}
+
+	s.render(runs)
+	if s.lastLines != 4 {
+		t.Errorf("lastLines = %d, want 4", s.lastLines)
 	}
 }
 

@@ -139,12 +139,40 @@ func (s *statusRenderer) renderTTY(runs []ghactions.WorkflowRun) {
 		fmt.Fprintf(&buf, "\033[%dA", s.lastLines) // cursor up
 	}
 
-	// Find the longest workflow name for alignment
+	// First pass: compute column widths for alignment.
+	// Name and identifier are separate columns so that identifiers like
+	// "[run 67]" right-align even when workflow names differ in length.
+	// Durations are split into major (hours/minutes) and minor (seconds)
+	// parts so that the minute boundary aligns across rows.
 	maxName := 0
+	maxId := 0
+	maxDurMajor := 0
+	maxDurMinor := 0
+	maxEst := 0
 	for _, run := range runs {
-		displayName := workflowRunDisplayName(run)
-		if len(displayName) > maxName {
-			maxName = len(displayName)
+		if len(run.Name) > maxName {
+			maxName = len(run.Name)
+		}
+		if id := workflowRunIdentifier(run); id != "" {
+			idStr := fmt.Sprintf("[%s]", id)
+			if len(idStr) > maxId {
+				maxId = len(idStr)
+			}
+		}
+		major, minor := durationParts(run.Duration())
+		if len(major) > maxDurMajor {
+			maxDurMajor = len(major)
+		}
+		if len(minor) > maxDurMinor {
+			maxDurMinor = len(minor)
+		}
+		if run.Status == "in_progress" || run.Status == "queued" {
+			if est, ok := s.estimates[run.WorkflowID]; ok {
+				estStr := fmt.Sprintf("(~%s est)", formatEstimate(est))
+				if len(estStr) > maxEst {
+					maxEst = len(estStr)
+				}
+			}
 		}
 	}
 
@@ -152,12 +180,26 @@ func (s *statusRenderer) renderTTY(runs []ghactions.WorkflowRun) {
 	for _, run := range runs {
 		icon, color := s.statusIcon(run)
 
-		durStr := durationString(run.Duration())
+		// Format duration with minute-boundary alignment: right-align the
+		// major part (minutes/hours) and left-align the minor part (seconds).
+		// When no durations have a major part, fall back to simple right-align.
+		major, minor := durationParts(run.Duration())
+		var durStr string
+		if maxDurMajor > 0 {
+			durStr = fmt.Sprintf("%*s%-*s", maxDurMajor, major, maxDurMinor, minor)
+		} else {
+			durStr = fmt.Sprintf("%*s", maxDurMinor, minor)
+		}
+
+		var idStr string
+		if id := workflowRunIdentifier(run); id != "" {
+			idStr = fmt.Sprintf("[%s]", id)
+		}
 
 		var estimate string
 		if run.Status == "in_progress" || run.Status == "queued" {
 			if est, ok := s.estimates[run.WorkflowID]; ok {
-				estimate = fmt.Sprintf("  (~%s est)", formatEstimate(est))
+				estimate = fmt.Sprintf("(~%s est)", formatEstimate(est))
 			}
 		}
 
@@ -166,19 +208,16 @@ func (s *statusRenderer) renderTTY(runs []ghactions.WorkflowRun) {
 			statusText = *run.Conclusion
 		}
 
-		displayName := workflowRunDisplayName(run)
-		line := fmt.Sprintf("  %s %-*s  %-12s %8s%s",
-			icon, maxName, displayName, statusText, durStr, estimate)
-
+		// Columns: icon | name (left) | id (right) | status (left) | dur (aligned) | est (right)
 		if color != "" && !s.noColor {
 			// Apply color to the icon and status text, with \033[0m (reset)
 			// after each colored span to return to default terminal colors.
-			line = fmt.Sprintf("  %s%s\033[0m %-*s  %s%-12s\033[0m %8s%s",
-				color, icon, maxName, displayName, color, statusText, durStr, estimate)
+			fmt.Fprintf(&buf, "\033[2K  %s%s\033[0m %-*s %*s  %s%-12s\033[0m %s  %*s\n",
+				color, icon, maxName, run.Name, maxId, idStr, color, statusText, durStr, maxEst, estimate)
+		} else {
+			fmt.Fprintf(&buf, "\033[2K  %s %-*s %*s  %-12s %s  %*s\n",
+				icon, maxName, run.Name, maxId, idStr, statusText, durStr, maxEst, estimate)
 		}
-
-		// \033[2K erases the entire current line, then we print the new content.
-		fmt.Fprintf(&buf, "\033[2K%s\n", line)
 		lines++
 	}
 
@@ -261,6 +300,32 @@ func durationString(d time.Duration) string {
 	h := int(d.Hours())
 	m := int(d.Minutes()) % 60
 	return fmt.Sprintf("%dh%dm", h, m)
+}
+
+// durationParts splits a formatted duration into a "major" part (hours and/or
+// minutes) and a "minor" part (seconds), so that columns of durations can
+// align on the minute boundary.
+//
+//	12m2s → ("12m", "2s")
+//	15m   → ("15m", "")
+//	27s   → ("",    "27s")
+//	1h2m  → ("1h2m", "")
+func durationParts(d time.Duration) (major, minor string) {
+	d = d.Round(time.Second)
+	if d < time.Minute {
+		return "", fmt.Sprintf("%ds", int(d.Seconds()))
+	}
+	if d < time.Hour {
+		m := int(d.Minutes())
+		s := int(d.Seconds()) % 60
+		if s == 0 {
+			return fmt.Sprintf("%dm", m), ""
+		}
+		return fmt.Sprintf("%dm", m), fmt.Sprintf("%ds", s)
+	}
+	h := int(d.Hours())
+	m := int(d.Minutes()) % 60
+	return fmt.Sprintf("%dh%dm", h, m), ""
 }
 
 // formatEstimate formats an estimated duration with coarser rounding,
