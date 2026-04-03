@@ -73,6 +73,7 @@ the current branch.
 	waitRemote := waitflags.String("remote", "origin", "Git remote to use")
 	waitOutputLines := waitflags.Int("failed-output-lines", 100, "Number of lines of failed output to display")
 	waitTimeout := waitflags.Duration("timeout", time.Hour, "Maximum time to wait")
+	waitNoRunsTimeout := waitflags.Duration("no-runs-timeout", 2*time.Minute, "How long to wait for runs to appear before giving up (0 to disable)")
 	waitQuiet := waitflags.Bool("quiet", false, "Only print final output, not periodic status updates")
 	waitCancelPreviousRuns := waitflags.Bool("cancel-previous-runs", false, "Cancel older queued or in-progress workflow runs before waiting")
 
@@ -154,7 +155,7 @@ Open the GitHub Actions workflow run for the current branch in your browser.
 		ctx, cancel := context.WithTimeout(ctx, *waitTimeout)
 		defer cancel()
 
-		err = doWait(ctx, client, remote, *waitRemote, branch, *waitOutputLines, *waitQuiet, *waitCancelPreviousRuns)
+		err = doWait(ctx, client, remote, *waitRemote, branch, *waitOutputLines, *waitQuiet, *waitCancelPreviousRuns, *waitNoRunsTimeout)
 		checkError(err, "waiting for workflow runs")
 
 	case "open":
@@ -547,13 +548,36 @@ func doOpen(ctx context.Context, client *ghactions.Client, remote *RemoteURL, re
 	}
 }
 
-func doWait(ctx context.Context, client *ghactions.Client, remote *RemoteURL, remoteName, branch string, numOutputLines int, quiet, cancelPreviousRuns bool) error {
+func doWait(ctx context.Context, client *ghactions.Client, remote *RemoteURL, remoteName, branch string, numOutputLines int, quiet, cancelPreviousRuns bool, noRunsTimeout time.Duration) error {
 	tip, err := gitTip(ctx, branch)
 	if err != nil {
 		return err
 	}
 
 	owner, repo := remote.Path, remote.RepoName
+	repoSvc := client.Repo(owner, repo)
+
+	// Check upfront whether the repo has any workflow files at all. If not,
+	// there is no point polling — error immediately.
+	workflows, err := repoSvc.ListWorkflows(ctx)
+	if err != nil {
+		slog.Debug("could not list workflows", "error", err)
+		// Non-fatal: fall through to the normal polling loop.
+	} else {
+		activeCount := 0
+		for _, w := range workflows.Workflows {
+			if w.State == "active" {
+				activeCount++
+			}
+		}
+		if activeCount == 0 {
+			if workflows.TotalCount == 0 {
+				return fmt.Errorf("no workflow files found in %s/%s; add a .github/workflows/*.yml file to enable GitHub Actions", owner, repo)
+			}
+			return fmt.Errorf("all %d workflows in %s/%s are disabled; enable at least one to run GitHub Actions", workflows.TotalCount, owner, repo)
+		}
+	}
+
 	renderer := newStatusRenderer(quiet)
 	cancelledPreviousRuns := false
 
@@ -569,7 +593,7 @@ func doWait(ctx context.Context, client *ghactions.Client, remote *RemoteURL, re
 	var lastRetryableErr error
 
 	for {
-		runs, err := client.Repo(owner, repo).FindWorkflowRunsForCommit(ctx, tip)
+		runs, err := repoSvc.FindWorkflowRunsForCommit(ctx, tip)
 		if err != nil {
 			if isHttpError(err) {
 				lastRetryableErr = err
@@ -600,6 +624,9 @@ func doWait(ctx context.Context, client *ghactions.Client, remote *RemoteURL, re
 					return errNoWorkflowRuns
 				}
 			}
+			if noRunsTimeout > 0 && time.Since(startTime) >= noRunsTimeout {
+				return fmt.Errorf("no workflow runs appeared for %s after %s (workflows exist but none triggered for this commit; check workflow trigger conditions, or increase --no-runs-timeout)", shortRef(tip), formatWaitDuration(time.Since(startTime)))
+			}
 			if !quiet {
 				fmt.Printf("No workflow runs found for %s yet, waiting...\n", shortRef(tip))
 			}
@@ -620,7 +647,7 @@ func doWait(ctx context.Context, client *ghactions.Client, remote *RemoteURL, re
 
 		// Fetch duration estimates once
 		if !renderer.estimatesDone {
-			renderer.fetchEstimates(ctx, client.Repo(owner, repo), runs)
+			renderer.fetchEstimates(ctx, repoSvc, runs)
 		}
 
 		// Check if all runs are complete
@@ -649,7 +676,6 @@ func doWait(ctx context.Context, client *ghactions.Client, remote *RemoteURL, re
 		// 30 seconds (to let jobs start up).
 		if !allComplete && !anyFailed && elapsed > 30*time.Second && time.Since(lastJobCheckAt) > 15*time.Second {
 			lastJobCheckAt = time.Now()
-			repoSvc := client.Repo(owner, repo)
 			for i := range runs {
 				run := &runs[i]
 				if run.IsCompleted() {

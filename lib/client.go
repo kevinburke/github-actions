@@ -91,6 +91,17 @@ func (c *Client) Repo(owner, repo string) *RepoService {
 	}
 }
 
+// newRequest creates an HTTP request, prepending our product token to the
+// User-Agent that the restclient already sets (like browsers do).
+func (r *RepoService) newRequest(ctx context.Context, method, path string, body io.Reader) (*http.Request, error) {
+	req, err := r.client.NewRequestWithContext(ctx, method, path, body)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", userAgent+" "+req.Header.Get("User-Agent"))
+	return req, nil
+}
+
 // ListWorkflowRuns lists workflow runs for the repository.
 // https://docs.github.com/en/rest/actions/workflow-runs#list-workflow-runs-for-a-repository
 func (r *RepoService) ListWorkflowRuns(ctx context.Context, params url.Values) (*WorkflowRunsResponse, error) {
@@ -99,13 +110,29 @@ func (r *RepoService) ListWorkflowRuns(ctx context.Context, params url.Values) (
 		path += "?" + params.Encode()
 	}
 
-	req, err := r.client.NewRequestWithContext(ctx, "GET", path, nil)
+	req, err := r.newRequest(ctx, "GET", path, nil)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", userAgent)
 
 	var resp WorkflowRunsResponse
+	if err := r.client.Do(req, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// ListWorkflows lists workflows for the repository.
+// https://docs.github.com/en/rest/actions/workflows#list-repository-workflows
+func (r *RepoService) ListWorkflows(ctx context.Context) (*WorkflowsResponse, error) {
+	path := fmt.Sprintf("/repos/%s/%s/actions/workflows", r.owner, r.repo)
+
+	req, err := r.newRequest(ctx, "GET", path, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	var resp WorkflowsResponse
 	if err := r.client.Do(req, &resp); err != nil {
 		return nil, err
 	}
@@ -117,11 +144,10 @@ func (r *RepoService) ListWorkflowRuns(ctx context.Context, params url.Values) (
 func (r *RepoService) GetWorkflowRun(ctx context.Context, runID int64) (*WorkflowRun, error) {
 	path := fmt.Sprintf("/repos/%s/%s/actions/runs/%d", r.owner, r.repo, runID)
 
-	req, err := r.client.NewRequestWithContext(ctx, "GET", path, nil)
+	req, err := r.newRequest(ctx, "GET", path, nil)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", userAgent)
 
 	var resp WorkflowRun
 	if err := r.client.Do(req, &resp); err != nil {
@@ -139,11 +165,10 @@ func (r *RepoService) ListJobs(ctx context.Context, runID int64, params url.Valu
 		path += "?" + params.Encode()
 	}
 
-	req, err := r.client.NewRequestWithContext(ctx, "GET", path, nil)
+	req, err := r.newRequest(ctx, "GET", path, nil)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", userAgent)
 
 	var resp JobsResponse
 	if err := r.client.Do(req, &resp); err != nil {
@@ -183,11 +208,10 @@ func (r *RepoService) FindFailedJob(ctx context.Context, runID int64) (*Job, err
 func (r *RepoService) GetJobLogs(ctx context.Context, jobID int64) ([]byte, error) {
 	path := fmt.Sprintf("/repos/%s/%s/actions/jobs/%d/logs", r.owner, r.repo, jobID)
 
-	req, err := r.client.NewRequestWithContext(ctx, "GET", path, nil)
+	req, err := r.newRequest(ctx, "GET", path, nil)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", userAgent)
 	req.Header.Set("Accept", "application/vnd.github.v3+json")
 
 	resp, err := r.client.Client.Client.Do(req)
@@ -354,11 +378,10 @@ func (r *RepoService) ListWorkflowRunsByWorkflow(ctx context.Context, workflowID
 		path += "?" + params.Encode()
 	}
 
-	req, err := r.client.NewRequestWithContext(ctx, "GET", path, nil)
+	req, err := r.newRequest(ctx, "GET", path, nil)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", userAgent)
 
 	var resp WorkflowRunsResponse
 	if err := r.client.Do(req, &resp); err != nil {
@@ -398,11 +421,10 @@ func (r *RepoService) FindWorkflowRunsForBranch(ctx context.Context, branch stri
 func (r *RepoService) CancelWorkflowRun(ctx context.Context, runID int64) error {
 	path := fmt.Sprintf("/repos/%s/%s/actions/runs/%d/cancel", r.owner, r.repo, runID)
 
-	req, err := r.client.NewRequestWithContext(ctx, "POST", path, nil)
+	req, err := r.newRequest(ctx, "POST", path, nil)
 	if err != nil {
 		return err
 	}
-	req.Header.Set("User-Agent", userAgent)
 
 	resp, err := r.client.Client.Client.Do(req)
 	if err != nil {
