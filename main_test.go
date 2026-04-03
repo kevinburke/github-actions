@@ -389,3 +389,15 @@ func TestConfiguredWorkflowLinks(t *testing.T) {
 		}
 	}
 }
+
+func TestHasWorkflowsHelpDocumentsExitCodes(t *testing.T) {
+	for _, want := range []string{
+		"exit 0 if any\nactive workflows are configured",
+		"Exits 1 if none are configured",
+		"Exits 2 if an\nactual error occurs while checking",
+	} {
+		if !strings.Contains(hasWorkflowsHelp, want) {
+			t.Fatalf("hasWorkflowsHelp = %q, want substring %q", hasWorkflowsHelp, want)
+		}
+	}
+}

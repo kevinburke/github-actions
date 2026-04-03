@@ -44,6 +44,21 @@ The commands are:
 Use "github-actions [command] --help" for more information about a command.
 `
 
+const hasWorkflowsHelp = `usage: has-workflows
+
+Print one configured GitHub Actions workflow URL per line and exit 0 if any
+active workflows are configured. Exits 1 if none are configured. Exits 2 if an
+actual error occurs while checking.
+
+`
+
+type workflowConfigurationStatus int
+
+const (
+	workflowConfigurationStatusConfigured workflowConfigurationStatus = iota
+	workflowConfigurationStatusNotConfigured
+)
+
 func usage() {
 	fmt.Fprint(os.Stderr, help)
 	flag.PrintDefaults()
@@ -104,12 +119,7 @@ Open the GitHub Actions workflow run for the current branch in your browser.
 
 	configuredRemote := configuredflags.String("remote", "origin", "Git remote to use")
 	configuredflags.Usage = func() {
-		fmt.Fprintf(os.Stderr, `usage: has-workflows
-
-Print one configured GitHub Actions workflow URL per line and exit 0 if any
-active workflows are configured. Exits 1 if none are configured.
-
-`)
+		fmt.Fprint(os.Stderr, hasWorkflowsHelp)
 		configuredflags.PrintDefaults()
 	}
 
@@ -156,17 +166,23 @@ active workflows are configured. Exits 1 if none are configured.
 		configuredflags.Parse(subargs)
 
 		remote, err := getRemoteURL(ctx, *configuredRemote)
-		checkError(err, "loading git info")
+		if err != nil {
+			failErrorWithExitCode(err, "loading git info", 2)
+		}
 
 		host := remote.Host
 		token, err := ghactions.GetToken(ctx, host)
-		checkError(err, "getting GitHub token")
+		if err != nil {
+			failErrorWithExitCode(err, "getting GitHub token", 2)
+		}
 
 		client := ghactions.NewClient(token, host)
 
-		configured, err := doConfigured(ctx, client, remote)
-		checkError(err, "checking configured workflows")
-		if !configured {
+		status, err := doConfigured(ctx, client, remote)
+		if err != nil {
+			failErrorWithExitCode(err, "checking configured workflows", 2)
+		}
+		if status == workflowConfigurationStatusNotConfigured {
 			os.Exit(1)
 		}
 
@@ -223,12 +239,16 @@ func checkError(err error, msg string) {
 }
 
 func failError(err error, msg string) {
+	failErrorWithExitCode(err, msg, 1)
+}
+
+func failErrorWithExitCode(err error, msg string, code int) {
 	if msg == "" {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 	} else {
 		fmt.Fprintf(os.Stderr, "Error %s: %v\n", msg, err)
 	}
-	os.Exit(1)
+	os.Exit(code)
 }
 
 func getBranchFromArgs(ctx context.Context, args []string) (string, error) {
@@ -524,16 +544,19 @@ func configuredWorkflowLinks(remote *RemoteURL, workflows []ghactions.Workflow) 
 	return links
 }
 
-func doConfigured(ctx context.Context, client *ghactions.Client, remote *RemoteURL) (bool, error) {
+func doConfigured(ctx context.Context, client *ghactions.Client, remote *RemoteURL) (workflowConfigurationStatus, error) {
 	workflows, err := client.Repo(remote.Path, remote.RepoName).ListWorkflows(ctx)
 	if err != nil {
-		return false, err
+		return workflowConfigurationStatusNotConfigured, err
 	}
 	links := configuredWorkflowLinks(remote, workflows.Workflows)
 	for _, link := range links {
 		fmt.Println(link)
 	}
-	return len(links) > 0, nil
+	if len(links) == 0 {
+		return workflowConfigurationStatusNotConfigured, nil
+	}
+	return workflowConfigurationStatusConfigured, nil
 }
 
 func cancelPreviousRunsForTip(ctx context.Context, client *ghactions.Client, remote *RemoteURL, remoteName, branch, tip string, quietWhenNoRuns bool) error {

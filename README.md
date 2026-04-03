@@ -82,7 +82,8 @@ Flags:
 ### has-workflows
 
 Print one active workflow URL per line. The command exits `0` when the
-repository has at least one active workflow and exits `1` when it does not.
+repository has at least one active workflow, exits `1` when it does not, and
+exits `2` when a real error occurs while checking.
 
 ```bash
 github-actions has-workflows [flags]

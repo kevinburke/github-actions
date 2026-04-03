@@ -10,6 +10,8 @@ Changes on `main` after `0.5.0`:
 - Added `github-actions has-workflows`, a scripting-friendly subcommand that
   lists active GitHub Actions workflow URLs and exits successfully only when a
   repository actually has workflows configured for the current remote.
+- Made `github-actions has-workflows` use distinct exit codes so scripts can
+  distinguish "no active workflows" (`1`) from operational failures (`2`).
 - Refactored the workflow-discovery helpers used by `wait` so the new command
   and the existing wait path share the same configuration checks and messages.
 
