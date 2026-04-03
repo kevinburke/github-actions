@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/url"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -101,7 +102,7 @@ func (s *statusRenderer) fetchEstimates(ctx context.Context, repo *ghactions.Rep
 			}
 		}
 		if len(durations) > 0 {
-			sort.Slice(durations, func(i, j int) bool { return durations[i] < durations[j] })
+			slices.Sort(durations)
 			median := durations[len(durations)/2]
 			slog.Debug("estimated duration",
 				"workflow", run.Name,
