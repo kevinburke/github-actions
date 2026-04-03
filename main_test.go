@@ -279,3 +279,113 @@ func TestCancelableWorkflowRuns(t *testing.T) {
 		t.Fatalf("cancelableWorkflowRuns() = %#v, want runs 2 and 4", got)
 	}
 }
+
+func TestActiveWorkflows(t *testing.T) {
+	workflows := []ghactions.Workflow{
+		{Name: "CI", State: "active"},
+		{Name: "Docs", State: "disabled_manually"},
+		{Name: "Release", State: "active"},
+	}
+
+	got := activeWorkflows(workflows)
+	if len(got) != 2 {
+		t.Fatalf("len(activeWorkflows()) = %d, want 2", len(got))
+	}
+	if got[0].Name != "CI" || got[1].Name != "Release" {
+		t.Fatalf("activeWorkflows() = %#v, want CI and Release", got)
+	}
+}
+
+func TestWorkflowConfigurationError(t *testing.T) {
+	tests := []struct {
+		name      string
+		workflows *ghactions.WorkflowsResponse
+		want      string
+	}{
+		{
+			name:      "none",
+			workflows: &ghactions.WorkflowsResponse{},
+			want:      "no workflow files found in owner/repo",
+		},
+		{
+			name: "disabled",
+			workflows: &ghactions.WorkflowsResponse{
+				TotalCount: 2,
+				Workflows: []ghactions.Workflow{
+					{Name: "CI", State: "disabled_manually"},
+					{Name: "Docs", State: "disabled_manually"},
+				},
+			},
+			want: "all 2 workflows in owner/repo are disabled",
+		},
+		{
+			name: "active",
+			workflows: &ghactions.WorkflowsResponse{
+				TotalCount: 1,
+				Workflows: []ghactions.Workflow{
+					{Name: "CI", State: "active"},
+				},
+			},
+			want: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := workflowConfigurationError("owner", "repo", tt.workflows)
+			if tt.want == "" {
+				if err != nil {
+					t.Fatalf("workflowConfigurationError() returned %v, want nil", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("workflowConfigurationError() = %v, want substring %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestConfiguredWorkflowLinks(t *testing.T) {
+	remote := &RemoteURL{
+		Host:     "github.com",
+		Path:     "owner",
+		RepoName: "repo",
+	}
+	workflows := []ghactions.Workflow{
+		{
+			Name:    "CI",
+			State:   "active",
+			HTMLURL: "https://github.com/owner/repo/actions/workflows/ci.yml",
+		},
+		{
+			Name:  "Docs",
+			State: "active",
+			Path:  ".github/workflows/docs.yml",
+		},
+		{
+			Name:  "Docs duplicate",
+			State: "active",
+			Path:  ".github/workflows/docs.yml",
+		},
+		{
+			Name:  "Disabled",
+			State: "disabled_manually",
+			Path:  ".github/workflows/disabled.yml",
+		},
+	}
+
+	got := configuredWorkflowLinks(remote, workflows)
+	want := []string{
+		"https://github.com/owner/repo/actions/workflows/ci.yml",
+		"https://github.com/owner/repo/actions/workflows/docs.yml",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("len(configuredWorkflowLinks()) = %d, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("configuredWorkflowLinks()[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}

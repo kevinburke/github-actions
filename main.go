@@ -7,6 +7,7 @@
 // The commands are:
 //
 //	version             Print the current version
+//	has-workflows       Report whether GitHub Actions workflows are configured.
 //	wait                Wait for workflow runs to finish on a branch.
 //	open                Open the workflow run in your browser.
 package main
@@ -19,6 +20,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path"
 	"time"
 
 	"github.com/kevinburke/bigtext"
@@ -33,10 +35,11 @@ Usage:
 
 The commands are:
 
-	cancel              Cancel older workflow runs on a branch
-	open                Open the workflow run in your browser
-	version             Print the current version
-	wait                Wait for workflow runs to finish on a branch.
+	cancel        Cancel older workflow runs on a branch
+	has-workflows Report whether GitHub Actions workflows are configured
+	open          Open the workflow run in your browser
+	version       Print the current version
+	wait          Wait for workflow runs to finish on a branch.
 
 Use "github-actions [command] --help" for more information about a command.
 `
@@ -55,6 +58,7 @@ func main() {
 	defer cancel()
 
 	cancelflags := flag.NewFlagSet("cancel", flag.ExitOnError)
+	configuredflags := flag.NewFlagSet("has-workflows", flag.ExitOnError)
 	waitflags := flag.NewFlagSet("wait", flag.ExitOnError)
 	openflags := flag.NewFlagSet("open", flag.ExitOnError)
 
@@ -98,6 +102,17 @@ Open the GitHub Actions workflow run for the current branch in your browser.
 		openflags.PrintDefaults()
 	}
 
+	configuredRemote := configuredflags.String("remote", "origin", "Git remote to use")
+	configuredflags.Usage = func() {
+		fmt.Fprintf(os.Stderr, `usage: has-workflows
+
+Print one configured GitHub Actions workflow URL per line and exit 0 if any
+active workflows are configured. Exits 1 if none are configured.
+
+`)
+		configuredflags.PrintDefaults()
+	}
+
 	debug := flag.Bool("debug", false, "Enable the debug log level")
 	flag.Parse()
 
@@ -136,6 +151,24 @@ Open the GitHub Actions workflow run for the current branch in your browser.
 
 		err = doCancel(ctx, client, remote, *cancelRemote, branch)
 		checkError(err, "cancelling workflow runs")
+
+	case "has-workflows":
+		configuredflags.Parse(subargs)
+
+		remote, err := getRemoteURL(ctx, *configuredRemote)
+		checkError(err, "loading git info")
+
+		host := remote.Host
+		token, err := ghactions.GetToken(ctx, host)
+		checkError(err, "getting GitHub token")
+
+		client := ghactions.NewClient(token, host)
+
+		configured, err := doConfigured(ctx, client, remote)
+		checkError(err, "checking configured workflows")
+		if !configured {
+			os.Exit(1)
+		}
 
 	case "wait":
 		waitflags.Parse(subargs)
@@ -445,6 +478,64 @@ func cancelableWorkflowRuns(tip string, runs []ghactions.WorkflowRun) []ghaction
 	return cancelable
 }
 
+func activeWorkflows(workflows []ghactions.Workflow) []ghactions.Workflow {
+	active := make([]ghactions.Workflow, 0, len(workflows))
+	for _, workflow := range workflows {
+		if workflow.State == "active" {
+			active = append(active, workflow)
+		}
+	}
+	return active
+}
+
+func workflowConfigurationError(owner, repo string, workflows *ghactions.WorkflowsResponse) error {
+	active := activeWorkflows(workflows.Workflows)
+	if len(active) > 0 {
+		return nil
+	}
+	if workflows.TotalCount == 0 {
+		return fmt.Errorf("no workflow files found in %s/%s; add a .github/workflows/*.yml file to enable GitHub Actions", owner, repo)
+	}
+	return fmt.Errorf("all %d workflows in %s/%s are disabled; enable at least one to run GitHub Actions", workflows.TotalCount, owner, repo)
+}
+
+func workflowURL(remote *RemoteURL, workflow ghactions.Workflow) string {
+	if workflow.HTMLURL != "" {
+		return workflow.HTMLURL
+	}
+	if workflow.Path != "" {
+		return fmt.Sprintf("https://%s/%s/%s/actions/workflows/%s", remote.Host, remote.Path, remote.RepoName, path.Base(workflow.Path))
+	}
+	return fmt.Sprintf("https://%s/%s/%s/actions", remote.Host, remote.Path, remote.RepoName)
+}
+
+func configuredWorkflowLinks(remote *RemoteURL, workflows []ghactions.Workflow) []string {
+	active := activeWorkflows(workflows)
+	links := make([]string, 0, len(active))
+	seen := make(map[string]struct{}, len(active))
+	for _, workflow := range active {
+		link := workflowURL(remote, workflow)
+		if _, ok := seen[link]; ok {
+			continue
+		}
+		seen[link] = struct{}{}
+		links = append(links, link)
+	}
+	return links
+}
+
+func doConfigured(ctx context.Context, client *ghactions.Client, remote *RemoteURL) (bool, error) {
+	workflows, err := client.Repo(remote.Path, remote.RepoName).ListWorkflows(ctx)
+	if err != nil {
+		return false, err
+	}
+	links := configuredWorkflowLinks(remote, workflows.Workflows)
+	for _, link := range links {
+		fmt.Println(link)
+	}
+	return len(links) > 0, nil
+}
+
 func cancelPreviousRunsForTip(ctx context.Context, client *ghactions.Client, remote *RemoteURL, remoteName, branch, tip string, quietWhenNoRuns bool) error {
 	owner, repo := remote.Path, remote.RepoName
 	runs, err := client.Repo(owner, repo).FindWorkflowRunsForBranch(ctx, branch)
@@ -564,17 +655,8 @@ func doWait(ctx context.Context, client *ghactions.Client, remote *RemoteURL, re
 		slog.Debug("could not list workflows", "error", err)
 		// Non-fatal: fall through to the normal polling loop.
 	} else {
-		activeCount := 0
-		for _, w := range workflows.Workflows {
-			if w.State == "active" {
-				activeCount++
-			}
-		}
-		if activeCount == 0 {
-			if workflows.TotalCount == 0 {
-				return fmt.Errorf("no workflow files found in %s/%s; add a .github/workflows/*.yml file to enable GitHub Actions", owner, repo)
-			}
-			return fmt.Errorf("all %d workflows in %s/%s are disabled; enable at least one to run GitHub Actions", workflows.TotalCount, owner, repo)
+		if err := workflowConfigurationError(owner, repo, workflows); err != nil {
+			return err
 		}
 	}
 

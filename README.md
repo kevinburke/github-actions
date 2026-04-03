@@ -15,10 +15,11 @@ go install github.com/kevinburke/github-actions@latest
 github-actions command [arguments]
 
 Commands:
-    cancel    Cancel older workflow runs on a branch
-    open      Open the workflow run in your browser
-    version   Print the current version
-    wait      Wait for workflow runs to finish on a branch
+    cancel        Cancel older workflow runs on a branch
+    has-workflows Report whether GitHub Actions workflows are configured
+    open          Open the workflow run in your browser
+    version       Print the current version
+    wait          Wait for workflow runs to finish on a branch
 ```
 
 ### wait
@@ -73,6 +74,18 @@ Open the GitHub Actions workflow run for the current branch in your browser.
 
 ```bash
 github-actions open [flags] [branch]
+```
+
+Flags:
+- `--remote` - Git remote to use (default "origin")
+
+### has-workflows
+
+Print one active workflow URL per line. The command exits `0` when the
+repository has at least one active workflow and exits `1` when it does not.
+
+```bash
+github-actions has-workflows [flags]
 ```
 
 Flags:

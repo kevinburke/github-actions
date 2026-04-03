@@ -24,10 +24,11 @@ type WorkflowsResponse struct {
 
 // Workflow represents a GitHub Actions workflow definition.
 type Workflow struct {
-	ID    int64  `json:"id"`
-	Name  string `json:"name"`
-	Path  string `json:"path"`
-	State string `json:"state"` // active, disabled_manually, etc.
+	ID      int64  `json:"id"`
+	Name    string `json:"name"`
+	Path    string `json:"path"`
+	State   string `json:"state"` // active, disabled_manually, etc.
+	HTMLURL string `json:"html_url"`
 }
 
 // WorkflowRunsResponse represents the response from listing workflow runs.
