@@ -14,7 +14,7 @@ import (
 )
 
 // Version is the github-actions version. Run "make release" to bump this number.
-const Version = "0.4.0"
+const Version = "0.5.0"
 
 // WorkflowsResponse represents the response from listing workflows.
 type WorkflowsResponse struct {
