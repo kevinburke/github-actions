@@ -123,11 +123,8 @@ func checkFile(path string) bool {
 // - $HOME/cfg/github-actions
 // - $HOME/.github-actions
 func getCfgPath() (string, error) {
-	checkedLocations := make([]string, 0)
-
 	xdgPath, ok := os.LookupEnv("XDG_CONFIG_HOME")
 	filePath := filepath.Join(xdgPath, "github-actions")
-	checkedLocations = append(checkedLocations, filePath)
 	if ok && checkFile(filePath) {
 		return filePath, nil
 	}
@@ -138,13 +135,11 @@ func getCfgPath() (string, error) {
 	}
 
 	cfgPath := filepath.Join(homeDir, "cfg", "github-actions")
-	checkedLocations = append(checkedLocations, cfgPath)
 	if checkFile(cfgPath) {
 		return cfgPath, nil
 	}
 
 	localPath := filepath.Join(homeDir, ".github-actions")
-	checkedLocations = append(checkedLocations, localPath)
 	if checkFile(localPath) {
 		return localPath, nil
 	}

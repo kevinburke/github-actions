@@ -1,9 +1,13 @@
-.PHONY: test release
+.PHONY: test vet release
 
 SHELL = /bin/bash -o pipefail
 
 test:
-	go test -trimpath ./...
+	go test -trimpath -race ./...
+
+vet:
+	go vet -trimpath ./...
+	staticcheck ./...
 
 version ?= minor
 

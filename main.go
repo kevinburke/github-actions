@@ -816,7 +816,7 @@ func doWait(ctx context.Context, client *ghactions.Client, remote *RemoteURL, re
 				os.Stdout.Write(data)
 				fmt.Printf("\nURL:\n%s\n", failedRun.HTMLURL)
 				c.Display("build failed")
-				return fmt.Errorf("Build on %s failed!", branch)
+				return fmt.Errorf("build on %s failed", branch)
 			}
 
 			// All succeeded
