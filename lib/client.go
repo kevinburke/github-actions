@@ -298,6 +298,18 @@ func buildJobsSummary(jobs []Job) ([]byte, *Job) {
 	return buf.Bytes(), failedJob
 }
 
+func failedJobURL(job *Job) string {
+	if job == nil || job.HTMLURL == "" {
+		return ""
+	}
+	for _, step := range job.Steps {
+		if step.Conclusion != nil && *step.Conclusion == "failure" && step.Number > 0 {
+			return fmt.Sprintf("%s#step:%d:1", job.HTMLURL, step.Number)
+		}
+	}
+	return job.HTMLURL
+}
+
 // BuildJobsSummary generates a summary of a workflow run's jobs.
 func (c *Client) BuildJobsSummary(ctx context.Context, owner, repo string, run WorkflowRun) []byte {
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
@@ -330,6 +342,9 @@ func (c *Client) BuildSummary(ctx context.Context, owner, repo string, run Workf
 	}
 
 	summary, failedJob := buildJobsSummary(jobs.Jobs)
+	if url := failedJobURL(failedJob); url != "" {
+		fmt.Fprintf(&buf, "Failed job URL:\n%s\n", url)
+	}
 
 	var failure []byte
 	if failedJob != nil {
