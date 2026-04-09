@@ -390,6 +390,87 @@ func TestConfiguredWorkflowLinks(t *testing.T) {
 	}
 }
 
+func TestPollIntervalForRateLimit(t *testing.T) {
+	const def = 4 * time.Second
+	now := time.Now()
+	tests := []struct {
+		name        string
+		rl          *ghactions.RateLimit
+		wantAtLeast time.Duration
+		wantAtMost  time.Duration
+	}{
+		{
+			name:        "nil rate limit returns default",
+			rl:          nil,
+			wantAtLeast: def,
+			wantAtMost:  def,
+		},
+		{
+			name: "plenty of budget returns default",
+			rl: &ghactions.RateLimit{
+				Limit: 5000, Remaining: 4500,
+				Reset: now.Add(time.Hour),
+			},
+			wantAtLeast: def,
+			wantAtMost:  def,
+		},
+		{
+			name: "26% remaining still returns default",
+			rl: &ghactions.RateLimit{
+				Limit: 5000, Remaining: 1300,
+				Reset: now.Add(time.Hour),
+			},
+			wantAtLeast: def,
+			wantAtMost:  def,
+		},
+		{
+			name: "low budget backs off",
+			rl: &ghactions.RateLimit{
+				Limit: 5000, Remaining: 100,
+				Reset: now.Add(30 * time.Minute),
+			},
+			// 30min/100 * 2 = 36s
+			wantAtLeast: 30 * time.Second,
+			wantAtMost:  45 * time.Second,
+		},
+		{
+			name: "very low budget capped at 2 minutes",
+			rl: &ghactions.RateLimit{
+				Limit: 5000, Remaining: 5,
+				Reset: now.Add(30 * time.Minute),
+			},
+			wantAtLeast: 2 * time.Minute,
+			wantAtMost:  2 * time.Minute,
+		},
+		{
+			name: "remaining 0 returns default (caller handles RateLimitError)",
+			rl: &ghactions.RateLimit{
+				Limit: 5000, Remaining: 0,
+				Reset: now.Add(10 * time.Minute),
+			},
+			wantAtLeast: def,
+			wantAtMost:  def,
+		},
+		{
+			name: "reset in past returns default",
+			rl: &ghactions.RateLimit{
+				Limit: 5000, Remaining: 1,
+				Reset: now.Add(-time.Minute),
+			},
+			wantAtLeast: def,
+			wantAtMost:  def,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := pollIntervalForRateLimit(tt.rl, def)
+			if got < tt.wantAtLeast || got > tt.wantAtMost {
+				t.Errorf("pollIntervalForRateLimit = %s, want in [%s, %s]", got, tt.wantAtLeast, tt.wantAtMost)
+			}
+		})
+	}
+}
+
 func TestHasWorkflowsHelpDocumentsExitCodes(t *testing.T) {
 	for _, want := range []string{
 		"exit 0 if any\nactive workflows are configured",

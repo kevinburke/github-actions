@@ -5,12 +5,14 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"os"
 	"strconv"
+	"sync/atomic"
 	"text/tabwriter"
 	"time"
 
@@ -30,6 +32,42 @@ func (e *Error) Error() string {
 	return e.Message
 }
 
+// RateLimitError is returned when GitHub rejects a request because the API rate
+// limit has been exhausted. Reset is the time at which the rate limit window
+// resets and a new request can be made.
+type RateLimitError struct {
+	StatusCode int
+	Message    string
+	Reset      time.Time
+	Limit      int
+	Resource   string
+}
+
+func (e *RateLimitError) Error() string {
+	if !e.Reset.IsZero() {
+		return fmt.Sprintf("github API rate limit exceeded (resets in %s): %s", time.Until(e.Reset).Round(time.Second), e.Message)
+	}
+	return "github API rate limit exceeded: " + e.Message
+}
+
+// IsRateLimitError reports whether err is a *RateLimitError.
+func IsRateLimitError(err error) (*RateLimitError, bool) {
+	var rle *RateLimitError
+	if errors.As(err, &rle) {
+		return rle, true
+	}
+	return nil, false
+}
+
+// RateLimit captures the most recent rate limit headers reported by GitHub.
+type RateLimit struct {
+	Limit      int
+	Remaining  int
+	Reset      time.Time
+	Resource   string
+	ObservedAt time.Time
+}
+
 type githubErrorResponse struct {
 	Message string `json:"message"`
 }
@@ -37,7 +75,54 @@ type githubErrorResponse struct {
 // Client is a GitHub API client.
 type Client struct {
 	*restclient.Client
-	host string
+	host    string
+	rateLim atomic.Pointer[RateLimit]
+}
+
+// RateLimit returns the most recently observed rate limit, or nil if no
+// response with rate limit headers has been seen yet.
+func (c *Client) RateLimit() *RateLimit {
+	return c.rateLim.Load()
+}
+
+// rateLimitTransport records X-RateLimit-* headers from each response onto the
+// owning Client.
+type rateLimitTransport struct {
+	base   http.RoundTripper
+	client *Client
+}
+
+func (t *rateLimitTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := t.base.RoundTrip(req)
+	if resp != nil {
+		if rl := parseRateLimit(resp.Header); rl != nil {
+			t.client.rateLim.Store(rl)
+		}
+	}
+	return resp, err
+}
+
+func parseRateLimit(h http.Header) *RateLimit {
+	rem := h.Get("X-RateLimit-Remaining")
+	if rem == "" {
+		return nil
+	}
+	remaining, err := strconv.Atoi(rem)
+	if err != nil {
+		return nil
+	}
+	limit, _ := strconv.Atoi(h.Get("X-RateLimit-Limit"))
+	resetUnix, _ := strconv.ParseInt(h.Get("X-RateLimit-Reset"), 10, 64)
+	rl := &RateLimit{
+		Limit:      limit,
+		Remaining:  remaining,
+		Resource:   h.Get("X-RateLimit-Resource"),
+		ObservedAt: time.Now(),
+	}
+	if resetUnix > 0 {
+		rl.Reset = time.Unix(resetUnix, 0)
+	}
+	return rl
 }
 
 // NewClient creates a new GitHub API client.
@@ -53,9 +138,16 @@ func NewClient(token string, host string) *Client {
 	}
 
 	rc := restclient.NewBearerClient(token, apiHost)
-	rc.Client.Transport = &retryTransport{
-		base:       rc.Client.Transport,
-		maxRetries: 3,
+	c := &Client{
+		Client: rc,
+		host:   host,
+	}
+	rc.Client.Transport = &rateLimitTransport{
+		base: &retryTransport{
+			base:       rc.Client.Transport,
+			maxRetries: 3,
+		},
+		client: c,
 	}
 	rc.ErrorParser = func(r *http.Response) error {
 		data, err := io.ReadAll(r.Body)
@@ -66,13 +158,24 @@ func NewClient(token string, host string) *Client {
 		if err := json.Unmarshal(data, &resp); err != nil {
 			return fmt.Errorf("could not decode %d error response as a GitHub error: %w", r.StatusCode, err)
 		}
+		// 403 or 429 with X-RateLimit-Remaining: 0 means we hit the
+		// primary rate limit. Surface a typed error so callers can
+		// sleep until reset rather than failing immediately.
+		if r.StatusCode == http.StatusForbidden || r.StatusCode == http.StatusTooManyRequests {
+			if rl := parseRateLimit(r.Header); rl != nil && rl.Remaining == 0 {
+				return &RateLimitError{
+					StatusCode: r.StatusCode,
+					Message:    resp.Message,
+					Reset:      rl.Reset,
+					Limit:      rl.Limit,
+					Resource:   rl.Resource,
+				}
+			}
+		}
 		return &Error{Message: resp.Message, StatusCode: r.StatusCode}
 	}
 
-	return &Client{
-		Client: rc,
-		host:   host,
-	}
+	return c
 }
 
 // RepoService provides access to repository-related API endpoints.

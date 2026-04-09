@@ -264,6 +264,60 @@ func isHttpError(err error) bool {
 	return ghactions.IsRetryableError(err)
 }
 
+// waitForRateLimitReset sleeps until the GitHub primary rate limit resets,
+// honoring ctx. It returns ctx.Err() if the context is cancelled before the
+// reset time.
+func waitForRateLimitReset(ctx context.Context, rle *ghactions.RateLimitError, quiet bool) error {
+	// Add a small buffer past the reset time to avoid racing the server
+	// clock and immediately hitting the limit again.
+	const buffer = 5 * time.Second
+	wait := max(time.Until(rle.Reset)+buffer, buffer)
+	if !quiet {
+		fmt.Printf("GitHub API rate limit exhausted (limit=%d, resource=%s). Sleeping %s until reset at %s.\n",
+			rle.Limit, rle.Resource, formatWaitDuration(wait), rle.Reset.Format(time.RFC3339))
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(wait):
+		return nil
+	}
+}
+
+// pollIntervalForRateLimit returns a polling interval appropriate for the
+// current rate limit budget. As the remaining budget shrinks relative to the
+// time until reset, the interval grows so we don't burn through the limit.
+// The returned interval is always at least defaultInterval and at most
+// maxInterval.
+func pollIntervalForRateLimit(rl *ghactions.RateLimit, defaultInterval time.Duration) time.Duration {
+	const maxInterval = 2 * time.Minute
+	if rl == nil || rl.Remaining <= 0 || rl.Reset.IsZero() {
+		return defaultInterval
+	}
+	resetIn := time.Until(rl.Reset)
+	if resetIn <= 0 {
+		return defaultInterval
+	}
+	// Don't start backing off until we've used a meaningful chunk of the
+	// budget. Anything more than ~25% remaining of a 5000 req/hr budget
+	// (i.e. 1250 requests across an hour) is plenty for one poll every
+	// few seconds.
+	if rl.Limit > 0 && rl.Remaining*4 > rl.Limit {
+		return defaultInterval
+	}
+	// Spread the remaining requests over the remaining time, with a 2x
+	// safety factor so we leave headroom for jobs/log fetches and other
+	// concurrent github-actions invocations.
+	safe := time.Duration(int64(resetIn) / int64(rl.Remaining) * 2)
+	if safe < defaultInterval {
+		return defaultInterval
+	}
+	if safe > maxInterval {
+		return maxInterval
+	}
+	return safe
+}
+
 var errNoWorkflowRuns = errors.New("github-actions: no workflow runs found")
 
 // otherRemoteResult holds information about workflow runs found on a
@@ -700,6 +754,13 @@ func doWait(ctx context.Context, client *ghactions.Client, remote *RemoteURL, re
 	for {
 		runs, err := repoSvc.FindWorkflowRunsForCommit(ctx, tip)
 		if err != nil {
+			if rle, ok := ghactions.IsRateLimitError(err); ok {
+				if werr := waitForRateLimitReset(ctx, rle, quiet); werr != nil {
+					return waitTimeoutError(startTime, lastSuccessfulPollAt, tip, lastObservedRuns, nil)
+				}
+				lastSuccessfulPollAt = time.Now()
+				continue
+			}
 			if isHttpError(err) {
 				lastRetryableErr = err
 				if waitErr := waitErrorForRetryablePollFailure(ctx, startTime, lastSuccessfulPollAt, tip, lastObservedRuns, lastRetryableErr); waitErr != nil {
@@ -735,10 +796,11 @@ func doWait(ctx context.Context, client *ghactions.Client, remote *RemoteURL, re
 			if !quiet {
 				fmt.Printf("No workflow runs found for %s yet, waiting...\n", shortRef(tip))
 			}
+			noRunsInterval := pollIntervalForRateLimit(client.RateLimit(), 5*time.Second)
 			select {
 			case <-ctx.Done():
 				return waitTimeoutError(startTime, lastSuccessfulPollAt, tip, lastObservedRuns, lastRetryableErr)
-			case <-time.After(5 * time.Second):
+			case <-time.After(noRunsInterval):
 			}
 			continue
 		}
@@ -867,11 +929,23 @@ func doWait(ctx context.Context, client *ghactions.Client, remote *RemoteURL, re
 		// its own shouldPrint throttle so extra calls are no-ops.
 		renderer.render(runs)
 
-		for range 3 {
+		// Sleep for the next poll interval, ticking the renderer once
+		// per second so elapsed durations keep advancing. The interval
+		// scales up automatically as the GitHub rate limit budget
+		// shrinks.
+		pollInterval := pollIntervalForRateLimit(client.RateLimit(), 4*time.Second)
+		nextPoll := time.After(pollInterval)
+		tick := time.NewTicker(1 * time.Second)
+	pollWait:
+		for {
 			select {
-			case <-time.After(1 * time.Second):
+			case <-nextPoll:
+				tick.Stop()
+				break pollWait
+			case <-tick.C:
 				renderer.render(runs)
 			case <-ctx.Done():
+				tick.Stop()
 				return waitTimeoutError(startTime, lastSuccessfulPollAt, tip, lastObservedRuns, lastRetryableErr)
 			}
 		}
