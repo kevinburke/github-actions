@@ -1,8 +1,10 @@
 package lib
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -61,9 +63,13 @@ func TestFindBuildFailure(t *testing.T) {
 		{"empty", "", 10, ""},
 		{"fewer_lines_than_requested", "line1\nline2\n", 10, "line1\nline2\n"},
 		{"exact_lines", "line1\nline2\nline3\n", 3, "line1\nline2\nline3\n"},
-		{"last_two", "line1\nline2\nline3\n", 2, "line2\nline3\n"},
-		{"last_one", "line1\nline2\nline3\n", 1, "line3\n"},
-		{"five_lines_last_three", "a\nb\nc\nd\ne\n", 3, "c\nd\ne\n"},
+		// No ##[error] lines, so we just get the tail with a gap marker.
+		{"last_two_no_errors", "line1\nline2\nline3\n", 2,
+			"\n... (omitting lines 1..1, use --failed-output-lines to show more output) ...\n\nline2\nline3\n"},
+		{"last_one_no_errors", "line1\nline2\nline3\n", 1,
+			"\n... (omitting lines 1..2, use --failed-output-lines to show more output) ...\n\nline3\n"},
+		{"five_lines_last_three_no_errors", "a\nb\nc\nd\ne\n", 3,
+			"\n... (omitting lines 1..2, use --failed-output-lines to show more output) ...\n\nc\nd\ne\n"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -73,6 +79,140 @@ func TestFindBuildFailure(t *testing.T) {
 					tt.log, tt.numOutputLines, got, tt.want)
 			}
 		})
+	}
+}
+
+// buildLog creates a log with numbered lines, inserting special content at
+// specified positions. Lines are 1-indexed to match the gap marker output.
+func buildLog(totalLines int, special map[int]string) string {
+	var buf bytes.Buffer
+	for i := 1; i <= totalLines; i++ {
+		if s, ok := special[i]; ok {
+			buf.WriteString(s)
+		} else {
+			fmt.Fprintf(&buf, "line %d\n", i)
+		}
+	}
+	return buf.String()
+}
+
+func TestFindBuildFailureErrorContext(t *testing.T) {
+	// 50-line log with an ##[error] at line 30. Budget = 10.
+	// Error context: lines 10..30 (21 lines, but capped by budget interaction).
+	// With budget 10: error region = lines 10..30 = 21 lines which exceeds
+	// budget. But error regions are always included; remaining tail budget
+	// would be negative, so only error context is shown.
+	log := buildLog(50, map[int]string{
+		30: "##[error]something broke\n",
+	})
+
+	got := findBuildFailure([]byte(log), 25)
+
+	// Error context: lines 10-30 = 21 lines. Tail budget: 25-21 = 4 lines
+	// (lines 47-50). Lines 31-46 are omitted.
+	if !bytes.Contains([]byte(got), []byte("##[error]something broke")) {
+		t.Error("output should contain the error line")
+	}
+	if !bytes.Contains([]byte(got), []byte("line 10\n")) {
+		t.Errorf("output should contain line 10 (start of error context)\ngot:\n%s", got)
+	}
+	if bytes.Contains([]byte(got), []byte("line 9\n")) {
+		t.Error("output should NOT contain line 9 (before error context)")
+	}
+	if !bytes.Contains([]byte(got), []byte("line 50\n")) {
+		t.Error("output should contain line 50 (tail)")
+	}
+	if !bytes.Contains([]byte(got), []byte("omitting lines")) {
+		t.Errorf("output should contain a gap marker\ngot:\n%s", got)
+	}
+}
+
+func TestFindBuildFailureErrorAtEnd(t *testing.T) {
+	// Error near the tail — context region overlaps with the tail, so no gap
+	// between them.
+	log := buildLog(50, map[int]string{
+		48: "##[error]late failure\n",
+	})
+
+	got := findBuildFailure([]byte(log), 30)
+
+	// Error context: lines 28-48 = 21 lines. Tail budget: 30-21 = 9 lines
+	// (lines 42-50). These overlap with the error region, producing a single
+	// contiguous block from line 28 to 50 (23 lines).
+	if bytes.Count([]byte(got), []byte("omitting lines")) != 1 {
+		t.Errorf("expected exactly one gap marker (at the start)\ngot:\n%s", got)
+	}
+	if !bytes.Contains([]byte(got), []byte("line 28\n")) {
+		t.Errorf("output should contain line 28 (start of error context)\ngot:\n%s", got)
+	}
+}
+
+func TestFindBuildFailureTwoErrors(t *testing.T) {
+	// Two errors far apart.
+	log := buildLog(100, map[int]string{
+		25: "##[error]first error\n",
+		75: "##[error]second error\n",
+	})
+
+	got := findBuildFailure([]byte(log), 60)
+
+	// First error context: lines 5-25 = 21 lines.
+	// Second error context: lines 55-75 = 21 lines.
+	// Error budget: 42. Tail budget: 60-42 = 18 lines (lines 83-100).
+	// Three gaps: before line 5, between 26-54, between 76-82.
+	if !bytes.Contains([]byte(got), []byte("##[error]first error")) {
+		t.Error("should contain first error")
+	}
+	if !bytes.Contains([]byte(got), []byte("##[error]second error")) {
+		t.Error("should contain second error")
+	}
+	if !bytes.Contains([]byte(got), []byte("line 100\n")) {
+		t.Error("should contain last line")
+	}
+
+	gapCount := bytes.Count([]byte(got), []byte("omitting lines"))
+	if gapCount != 3 {
+		t.Errorf("expected 3 gap markers, got %d\ngot:\n%s", gapCount, got)
+	}
+}
+
+func TestFindBuildFailureNoErrorsFallback(t *testing.T) {
+	// No ##[error] lines at all — should behave like the old tail-only logic.
+	log := buildLog(50, nil)
+	got := findBuildFailure([]byte(log), 10)
+
+	if !bytes.Contains([]byte(got), []byte("line 50\n")) {
+		t.Error("should contain last line")
+	}
+	if !bytes.Contains([]byte(got), []byte("line 41\n")) {
+		t.Errorf("should contain line 41 (start of tail)\ngot:\n%s", got)
+	}
+	if bytes.Contains([]byte(got), []byte("line 40\n")) {
+		t.Error("should NOT contain line 40")
+	}
+}
+
+func TestFindBuildFailureErrorBudgetExceedsTotal(t *testing.T) {
+	// Error context alone exceeds the budget — tail gets 0 extra lines,
+	// but all error context is still shown.
+	log := buildLog(50, map[int]string{
+		25: "##[error]err1\n",
+		30: "##[error]err2\n",
+	})
+	// err1 context: 5-25 = 21 lines. err2 context: 10-30 = 21 lines.
+	// Overlap: 10-25 = 16 lines shared. Unique: 21+21-16 = 26 lines.
+	// Budget = 10 → tail budget negative → only error context shown.
+	got := findBuildFailure([]byte(log), 10)
+
+	if !bytes.Contains([]byte(got), []byte("##[error]err1")) {
+		t.Error("should contain first error")
+	}
+	if !bytes.Contains([]byte(got), []byte("##[error]err2")) {
+		t.Error("should contain second error")
+	}
+	// No tail lines beyond the error context should appear.
+	if bytes.Contains([]byte(got), []byte("line 50\n")) {
+		t.Errorf("should NOT contain line 50 (no tail budget)\ngot:\n%s", got)
 	}
 }
 

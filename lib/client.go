@@ -464,28 +464,90 @@ func (c *Client) BuildSummary(ctx context.Context, owner, repo string, run Workf
 		buf2.Write(bytes.Repeat([]byte{'='}, linelen))
 	}
 	if len(failure) > 0 {
-		fmt.Fprintf(&buf2, "\nLast %d lines of failed build output:\n\n", numOutputLines)
+		fmt.Fprintf(&buf2, "\nFailed build output:\n\n")
 		buf2.Write(failure)
 	}
 	return append(summary, buf2.Bytes()...)
 }
 
-// findBuildFailure extracts the last N lines from the log.
+// errorContextLines is the number of lines shown before each ##[error] line.
+const errorContextLines = 20
+
+// findBuildFailure extracts the most relevant lines from a failed job log.
+//
+// The algorithm allocates numOutputLines total lines of budget:
+//  1. For each ##[error] line, include it and the preceding errorContextLines
+//     lines. Lines included by multiple error regions are only counted once.
+//  2. With the remaining budget, include that many lines from the tail of the
+//     log.
+//  3. Regions are emitted in log order. Gaps between regions get a marker
+//     showing the omitted line range.
 func findBuildFailure(log []byte, numOutputLines int) []byte {
 	if len(log) == 0 {
 		return log
 	}
 
-	// Count newlines from the end
-	newlineIdx := len(log)
-	for range numOutputLines {
-		prevNewlineIdx := bytes.LastIndexByte(log[:newlineIdx-1], '\n')
-		if prevNewlineIdx == -1 {
-			return log
-		}
-		newlineIdx = prevNewlineIdx + 1
+	lines := bytes.SplitAfter(log, []byte("\n"))
+	// SplitAfter on a trailing newline produces an empty final element.
+	if len(lines) > 0 && len(lines[len(lines)-1]) == 0 {
+		lines = lines[:len(lines)-1]
 	}
-	return log[newlineIdx:]
+
+	if len(lines) <= numOutputLines {
+		return log
+	}
+
+	errorMarker := []byte("##[error]")
+
+	// Mark lines belonging to error-context regions.
+	included := make([]bool, len(lines))
+	errorBudget := 0
+	for i, line := range lines {
+		if !bytes.Contains(line, errorMarker) {
+			continue
+		}
+		start := i - errorContextLines
+		if start < 0 {
+			start = 0
+		}
+		for j := start; j <= i; j++ {
+			if !included[j] {
+				included[j] = true
+				errorBudget++
+			}
+		}
+	}
+
+	// Fill remaining budget from the tail.
+	tailBudget := numOutputLines - errorBudget
+	if tailBudget > 0 {
+		tailStart := len(lines) - tailBudget
+		if tailStart < 0 {
+			tailStart = 0
+		}
+		for i := tailStart; i < len(lines); i++ {
+			included[i] = true
+		}
+	}
+
+	// Emit included lines in order, with gap markers.
+	var buf bytes.Buffer
+	gapStart := -1
+	for i, line := range lines {
+		if !included[i] {
+			if gapStart == -1 {
+				gapStart = i
+			}
+			continue
+		}
+		if gapStart != -1 {
+			fmt.Fprintf(&buf, "\n... (omitting lines %d..%d, use --failed-output-lines to show more output) ...\n\n", gapStart+1, i)
+			gapStart = -1
+		}
+		buf.Write(line)
+	}
+
+	return buf.Bytes()
 }
 
 // ListWorkflowRunsByWorkflow lists workflow runs for a specific workflow.
