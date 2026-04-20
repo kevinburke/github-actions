@@ -101,6 +101,19 @@ type Step struct {
 	CompletedAt *time.Time `json:"completed_at"`
 }
 
+// Annotation represents a check-run annotation. Annotations surface
+// run-level failure reasons that are not present in the job logs — e.g.
+// billing/quota errors that prevent a job from starting.
+type Annotation struct {
+	Path            string `json:"path"`
+	StartLine       int    `json:"start_line"`
+	EndLine         int    `json:"end_line"`
+	AnnotationLevel string `json:"annotation_level"` // notice, warning, failure
+	Title           string `json:"title"`
+	Message         string `json:"message"`
+	RawDetails      string `json:"raw_details"`
+}
+
 // Host represents a GitHub host configuration.
 type Host struct {
 	Token string `toml:"token"`

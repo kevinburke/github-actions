@@ -3,11 +3,14 @@ package lib
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -328,6 +331,148 @@ func TestClientReturnsRateLimitErrorOn403(t *testing.T) {
 	var generic *Error
 	if errors.As(err, &generic) {
 		t.Errorf("403 with remaining=0 should not also be a generic *Error: %v", generic)
+	}
+}
+
+// buildSummaryServer wires up an httptest.Server that responds to the three
+// endpoints BuildSummary hits: list-jobs, list-annotations, and job-logs. Any
+// handler may be nil; a nil handler returns 404.
+type buildSummaryServer struct {
+	jobsBody        string
+	annotationsBody string
+	annotationsCode int
+	logsBody        string
+	logsCode        int
+}
+
+func (s buildSummaryServer) handler(t *testing.T) http.Handler {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/o/r/actions/runs/42/jobs", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if _, err := io.WriteString(w, s.jobsBody); err != nil {
+			t.Error(err)
+		}
+	})
+	mux.HandleFunc("/repos/o/r/check-runs/99/annotations", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if s.annotationsCode != 0 {
+			w.WriteHeader(s.annotationsCode)
+		}
+		if _, err := io.WriteString(w, s.annotationsBody); err != nil {
+			t.Error(err)
+		}
+	})
+	mux.HandleFunc("/repos/o/r/actions/jobs/99/logs", func(w http.ResponseWriter, r *http.Request) {
+		code := s.logsCode
+		if code == 0 {
+			code = http.StatusOK
+		}
+		w.WriteHeader(code)
+		if _, err := io.WriteString(w, s.logsBody); err != nil {
+			t.Error(err)
+		}
+	})
+	return mux
+}
+
+// failedJobJobsBody returns a ListJobs response with a single job named "build"
+// that has conclusion="failure", zero steps, and check-run/job ID 99. Mirrors
+// the shape GitHub returns for billing-aborted runs.
+const failedJobJobsBody = `{
+	"total_count": 1,
+	"jobs": [{
+		"id": 99,
+		"run_id": 42,
+		"name": "build",
+		"status": "completed",
+		"conclusion": "failure",
+		"html_url": "https://github.com/o/r/actions/runs/42/job/99",
+		"steps": []
+	}]
+}`
+
+func newTestClient(t *testing.T, handler http.Handler) (*Client, func()) {
+	t.Helper()
+	srv := httptest.NewServer(handler)
+	c := NewClient("token", "github.com")
+	c.Client.Base = srv.URL
+	return c, srv.Close
+}
+
+// TestBuildSummaryFailedJobURL verifies that BuildSummary includes the
+// "Failed job URL:" line. Regression test for a bug where the line was
+// written to a buffer that never made it into the returned output.
+func TestBuildSummaryFailedJobURL(t *testing.T) {
+	srv := buildSummaryServer{
+		jobsBody:        failedJobJobsBody,
+		annotationsBody: `[]`,
+		logsCode:        http.StatusNotFound,
+		logsBody:        `not found`,
+	}
+	c, cleanup := newTestClient(t, srv.handler(t))
+	defer cleanup()
+
+	out := string(c.BuildSummary(context.Background(), "o", "r", WorkflowRun{ID: 42}, 100))
+
+	if !strings.Contains(out, "Failed job URL:") {
+		t.Errorf("output missing 'Failed job URL:' header\ngot:\n%s", out)
+	}
+	if !strings.Contains(out, "https://github.com/o/r/actions/runs/42/job/99") {
+		t.Errorf("output missing failed job URL\ngot:\n%s", out)
+	}
+}
+
+// TestBuildSummarySurfacesLogFetchError verifies that a log-fetch failure
+// is reported in the output rather than silently swallowed.
+func TestBuildSummarySurfacesLogFetchError(t *testing.T) {
+	srv := buildSummaryServer{
+		jobsBody:        failedJobJobsBody,
+		annotationsBody: `[]`,
+		logsCode:        http.StatusNotFound,
+		logsBody:        `<Error>BlobNotFound</Error>`,
+	}
+	c, cleanup := newTestClient(t, srv.handler(t))
+	defer cleanup()
+
+	out := string(c.BuildSummary(context.Background(), "o", "r", WorkflowRun{ID: 42}, 100))
+
+	if !strings.Contains(out, "Error fetching job logs") {
+		t.Errorf("output should mention the log fetch error\ngot:\n%s", out)
+	}
+}
+
+// TestBuildSummarySurfacesFailureAnnotation verifies that check-run
+// annotations (e.g. the billing-failure message) are printed in the summary.
+// This is the only place GitHub exposes that message when the job never
+// started and has no logs.
+func TestBuildSummarySurfacesFailureAnnotation(t *testing.T) {
+	billingMsg := "The job was not started because recent account payments have failed or your spending limit needs to be increased. Please check the 'Billing & plans' section in your settings"
+	annotationsJSON, err := json.Marshal([]Annotation{{
+		AnnotationLevel: "failure",
+		Message:         billingMsg,
+	}, {
+		AnnotationLevel: "notice",
+		Message:         "ignore me",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := buildSummaryServer{
+		jobsBody:        failedJobJobsBody,
+		annotationsBody: string(annotationsJSON),
+		logsCode:        http.StatusNotFound,
+	}
+	c, cleanup := newTestClient(t, srv.handler(t))
+	defer cleanup()
+
+	out := string(c.BuildSummary(context.Background(), "o", "r", WorkflowRun{ID: 42}, 100))
+
+	if !strings.Contains(out, billingMsg) {
+		t.Errorf("output should contain the billing failure message\ngot:\n%s", out)
+	}
+	if strings.Contains(out, "ignore me") {
+		t.Errorf("output should not include notice-level annotations\ngot:\n%s", out)
 	}
 }
 

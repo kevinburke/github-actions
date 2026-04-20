@@ -280,6 +280,25 @@ func (r *RepoService) ListJobs(ctx context.Context, runID int64, params url.Valu
 	return &resp, nil
 }
 
+// ListCheckRunAnnotations fetches annotations attached to a check run. For
+// Actions jobs, the check run ID equals the job ID. Annotations are where
+// GitHub surfaces run-level failure reasons that never make it into the
+// logs — for example the billing/quota error produced when a job refuses
+// to start because the account's spending limit has been exceeded.
+// https://docs.github.com/en/rest/checks/runs#list-check-run-annotations
+func (r *RepoService) ListCheckRunAnnotations(ctx context.Context, checkRunID int64) ([]Annotation, error) {
+	path := fmt.Sprintf("/repos/%s/%s/check-runs/%d/annotations", r.owner, r.repo, checkRunID)
+	req, err := r.newRequest(ctx, "GET", path, nil)
+	if err != nil {
+		return nil, err
+	}
+	var resp []Annotation
+	if err := r.client.Do(req, &resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
 // FindFailedJob checks a workflow run's jobs (across all pages) and returns
 // the first failed job, or nil if no jobs have failed yet.
 func (r *RepoService) FindFailedJob(ctx context.Context, runID int64) (*Job, error) {
@@ -432,42 +451,61 @@ func (c *Client) BuildJobsSummary(ctx context.Context, owner, repo string, run W
 
 // BuildSummary generates a summary of a workflow run's jobs.
 func (c *Client) BuildSummary(ctx context.Context, owner, repo string, run WorkflowRun, numOutputLines int) []byte {
-	var buf bytes.Buffer
-	buf.WriteByte('\n')
-
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 
-	jobs, err := c.Repo(owner, repo).ListJobs(ctx, run.ID, url.Values{"per_page": []string{"100"}})
+	repoSvc := c.Repo(owner, repo)
+
+	jobs, err := repoSvc.ListJobs(ctx, run.ID, url.Values{"per_page": []string{"100"}})
 	if err != nil {
-		fmt.Fprintf(&buf, "Error fetching jobs: %v\n", err)
+		var buf bytes.Buffer
+		fmt.Fprintf(&buf, "\nError fetching jobs: %v\n", err)
 		return buf.Bytes()
 	}
 
 	summary, failedJob := buildJobsSummary(jobs.Jobs)
-	if url := failedJobURL(failedJob); url != "" {
-		fmt.Fprintf(&buf, "Failed job URL:\n%s\n", url)
+
+	var buf bytes.Buffer
+	buf.WriteByte('\n')
+	if linelen := bytes.IndexByte(summary[1:], '\n'); linelen > 0 {
+		buf.Write(bytes.Repeat([]byte{'='}, linelen))
+		buf.WriteByte('\n')
 	}
 
-	var failure []byte
+	if url := failedJobURL(failedJob); url != "" {
+		fmt.Fprintf(&buf, "\nFailed job URL:\n%s\n", url)
+	}
+
 	if failedJob != nil {
-		logs, err := c.Repo(owner, repo).GetJobLogs(ctx, failedJob.ID)
-		if err == nil {
-			failure = findBuildFailure(logs, numOutputLines)
+		// Check-run annotations surface run-level failure reasons that
+		// never appear in the job logs (e.g. billing/quota errors that
+		// prevent the job from starting). Print them before the log
+		// output since they're usually the most actionable line.
+		annots, err := repoSvc.ListCheckRunAnnotations(ctx, failedJob.ID)
+		if err != nil {
+			fmt.Fprintf(&buf, "\nError fetching annotations: %v\n", err)
+		} else {
+			for _, a := range annots {
+				if a.AnnotationLevel != "failure" {
+					continue
+				}
+				fmt.Fprintf(&buf, "\nFailure annotation: %s\n", a.Message)
+			}
+		}
+
+		logs, err := repoSvc.GetJobLogs(ctx, failedJob.ID)
+		switch {
+		case err != nil:
+			fmt.Fprintf(&buf, "\nError fetching job logs: %v\n", err)
+		case len(logs) > 0:
+			if failure := findBuildFailure(logs, numOutputLines); len(failure) > 0 {
+				fmt.Fprintf(&buf, "\nFailed build output:\n\n")
+				buf.Write(failure)
+			}
 		}
 	}
 
-	linelen := bytes.IndexByte(summary[1:], '\n')
-	var buf2 bytes.Buffer
-	buf2.WriteByte('\n')
-	if linelen > 0 {
-		buf2.Write(bytes.Repeat([]byte{'='}, linelen))
-	}
-	if len(failure) > 0 {
-		fmt.Fprintf(&buf2, "\nFailed build output:\n\n")
-		buf2.Write(failure)
-	}
-	return append(summary, buf2.Bytes()...)
+	return append(summary, buf.Bytes()...)
 }
 
 // errorContextLines is the number of lines shown before each ##[error] line.
