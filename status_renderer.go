@@ -227,6 +227,31 @@ func (s *statusRenderer) renderTTY(runs []ghactions.WorkflowRun) {
 	os.Stdout.WriteString(buf.String())
 }
 
+// renderWaiting prints a "still waiting for runs" status line. On a TTY it
+// overwrites any previous status line so successive polls share one line; the
+// next render or clearStatus call wipes it via the normal lastLines mechanism.
+func (s *statusRenderer) renderWaiting(msg string) {
+	if s.quiet {
+		return
+	}
+	if !s.isTTY {
+		elapsed := time.Since(s.startTime).Round(time.Second)
+		if !shouldPrint(s.lastPrintedAt, elapsed) {
+			return
+		}
+		fmt.Println(msg)
+		s.lastPrintedAt = time.Now()
+		return
+	}
+	var buf strings.Builder
+	if s.lastLines > 0 {
+		fmt.Fprintf(&buf, "\033[%dA", s.lastLines)
+	}
+	fmt.Fprintf(&buf, "\033[2K%s\n", msg)
+	s.lastLines = 1
+	os.Stdout.WriteString(buf.String())
+}
+
 func (s *statusRenderer) renderPlain(runs []ghactions.WorkflowRun) {
 	elapsed := time.Since(s.startTime).Round(time.Second)
 	if !shouldPrint(s.lastPrintedAt, elapsed) {

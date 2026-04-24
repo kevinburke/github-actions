@@ -793,9 +793,7 @@ func doWait(ctx context.Context, client *ghactions.Client, remote *RemoteURL, re
 			if noRunsTimeout > 0 && time.Since(startTime) >= noRunsTimeout {
 				return fmt.Errorf("no workflow runs appeared for %s after %s (workflows exist but none triggered for this commit; check workflow trigger conditions, or increase --no-runs-timeout)", shortRef(tip), formatWaitDuration(time.Since(startTime)))
 			}
-			if !quiet {
-				fmt.Printf("No workflow runs found for %s yet, waiting...\n", shortRef(tip))
-			}
+			renderer.renderWaiting(fmt.Sprintf("No workflow runs found for %s yet, waiting...", shortRef(tip)))
 			noRunsInterval := pollIntervalForRateLimit(client.RateLimit(), 5*time.Second)
 			select {
 			case <-ctx.Done():
@@ -804,6 +802,10 @@ func doWait(ctx context.Context, client *ghactions.Client, remote *RemoteURL, re
 			}
 			continue
 		}
+
+		// Wipe any "waiting for runs..." status line before downstream prints,
+		// so cursor-based overwriting from render() stays in sync.
+		renderer.clearStatus()
 
 		if cancelPreviousRuns && !cancelledPreviousRuns && hasWorkflowRunsForCommit(tip, runs) {
 			if err := cancelPreviousRunsForTip(ctx, client, remote, remoteName, branch, tip, true); err != nil {
